@@ -5,7 +5,11 @@ import { setSocket, setConnected, addMessage, setTyping, initRoom } from '../sto
 import { liveUpdateBooking } from '../store/slices/bookingSlice'
 import { selectToken } from '../store/slices/authSlice'
 
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:5000'
+// const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:5000'
+
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 
+                   `http://${window.location.hostname}:5000`
+
 
 export const useSocket = () => {
   const dispatch = useDispatch()
