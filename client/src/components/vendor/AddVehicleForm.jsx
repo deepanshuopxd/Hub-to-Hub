@@ -6,7 +6,7 @@ import { validateVehicleForm, hasErrors } from '../../utils/validators'
 import { HUBS } from '../../utils/formatters'
 import toast from 'react-hot-toast'
 
-const CATEGORIES = ['sedan', 'suv', 'hatchback', 'bike']
+const CATEGORIES = ['sedan', 'suv', 'hatchback', 'bike','scooty']
 
 const AddVehicleForm = ({ initialValues = null, isEdit = false, onClose, onSuccess }) => {
 

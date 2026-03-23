@@ -190,7 +190,10 @@ const FleetTable = ({ fleet = [], loading = false }) => {
                   <td className="px-4 py-3">
                     <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button
-                        onClick={() => setEditTarget(v)}
+                        onClick={() => {
+                          console.log("Edit button clicked");
+                          setEditTarget(v)}
+                        }
                         className="p-1.5 text-brand-muted hover:text-brand-amber hover:bg-brand-amber/10 transition-colors"
                         title="Edit"
                       >
