@@ -12,36 +12,63 @@ const haversineKm = (lat1, lng1, lat2, lng2) => {
 }
 
 /**
- * calculatePrice
+ * calculatePrice — time-based billing
+ *
+ * Billing rules:
+ *  - Charges are per 24-hour block, rounded UP
+ *  - 1 hr trip   = 1 day charged
+ *  - 24 hr trip  = 1 day charged
+ *  - 25 hr trip  = 2 days charged  ← if returned 1hr late, full extra day
+ *  - 48 hr trip  = 2 days charged
+ *  - 49 hr trip  = 3 days charged
  *
  * @param {number} pricePerDay
- * @param {string|Date} startDate
- * @param {string|Date} endDate
- * @param {object} [startHub]   { lat, lng, name }
- * @param {object} [endHub]     { lat, lng, name }
- * @returns {object}
+ * @param {string|Date} startDateTime   — full datetime e.g. "2025-04-10T10:00"
+ * @param {string|Date} endDateTime     — full datetime e.g. "2025-04-12T11:00"
+ * @param {object} [startHub]           — { lat, lng, name }
+ * @param {object} [endHub]             — { lat, lng, name }
+ * @param {number} [securityDeposit]    — per-vehicle deposit set by vendor
  */
-const calculatePrice = (pricePerDay, startDate, endDate, startHub = null, endHub = null) => {
-  const start = new Date(startDate)
-  const end   = new Date(endDate)
+const calculatePrice = (
+  pricePerDay,
+  startDateTime,
+  endDateTime,
+  startHub        = null,
+  endHub          = null,
+  securityDeposit = null,
+) => {
+  const start = new Date(startDateTime)
+  const end   = new Date(endDateTime)
   if (isNaN(start) || isNaN(end)) throw new Error('Invalid dates')
-  if (end <= start)               throw new Error('End date must be after start date')
+  if (end <= start)               throw new Error('End time must be after start time')
 
-  const days        = Math.max(1, Math.ceil((end - start) / (1000 * 60 * 60 * 24)))
-  const rentalCost  = Math.round(pricePerDay * days)
-  const deposit     = Number(process.env.SECURITY_DEPOSIT)    || 2000
+  // Time-based: exact hours → ceil to full days
+  const ms          = end - start
+  const totalHours  = Math.max(1, Math.ceil(ms / (1000 * 60 * 60)))
+  const totalDays   = Math.max(1, Math.ceil(totalHours / 24))   // rounds UP every partial day
+  const pricePerHour= pricePerDay / 24
+
+  const rentalCost  = Math.round(pricePerDay * totalDays)
+
+  // Use vehicle's securityDeposit if provided, else env fallback
+  const deposit     = securityDeposit !== null
+    ? Number(securityDeposit)
+    : (Number(process.env.SECURITY_DEPOSIT) || 2000)
+
   const feePct      = Number(process.env.PLATFORM_FEE_PERCENT) || 10
   const platformFee = Math.round(rentalCost * feePct / 100)
   const vendorPayout= rentalCost - platformFee
   const totalPrice  = rentalCost + deposit
 
-  const distanceKm = startHub && endHub
+  const distanceKm  = startHub && endHub
     ? haversineKm(startHub.lat, startHub.lng, endHub.lat, endHub.lng)
     : 0
 
   return {
-    days,
+    totalHours,
+    totalDays,
     pricePerDay:         Number(pricePerDay),
+    pricePerHour:        Math.round(pricePerHour),
     rentalCost,
     deposit,
     platformFee,

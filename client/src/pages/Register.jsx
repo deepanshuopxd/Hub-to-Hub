@@ -1,257 +1,324 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { useDispatch } from 'react-redux'
-import { Eye, EyeOff, ArrowRight, AlertCircle, Car, User } from 'lucide-react'
-import { registerUser } from '../store/slices/authSlice'
-import { validateRegisterForm, hasErrors } from '../utils/validators'
+import { useDispatch, useSelector } from 'react-redux'
+import { User, Mail, Lock, Phone, Building, MapPin, ArrowRight } from 'lucide-react'
+import {
+  registerUser, registerWithPhone,
+  clearError, selectAuthLoading, selectAuthError,
+} from '../store/slices/authSlice'
+import { sendPhoneOTP, confirmPhoneOTP } from '../services/firebase'
 import toast from 'react-hot-toast'
 
 const Register = () => {
   const dispatch  = useDispatch()
   const navigate  = useNavigate()
+  const loading   = useSelector(selectAuthLoading)
+  const error     = useSelector(selectAuthError)
 
-  const [form, setForm]       = useState({
-    name: '', email: '', phone: '', password: '', role: 'customer',
-  })
-  const [errors, setErrors]   = useState({})
-  const [showPass, setShowPass]= useState(false)
-  const [loading, setLoading] = useState(false)
+  const [role,         setRole]         = useState('customer')
+  const [authMethod,   setAuthMethod]   = useState('email')  // 'email' | 'phone'
+  const [step,         setStep]         = useState(1)        // 1=form, 2=otp
 
-  const handleChange = (e) => {
-    const { name, value } = e.target
-    setForm(f => ({ ...f, [name]: value }))
-    if (errors[name]) setErrors(er => ({ ...er, [name]: null }))
-  }
+  // Form fields
+  const [name,     setName]     = useState('')
+  const [email,    setEmail]    = useState('')
+  const [password, setPassword] = useState('')
+  const [phone,    setPhone]    = useState('')
 
-  const setRole = (role) => {
-    setForm(f => ({ ...f, role }))
-    if (errors.role) setErrors(er => ({ ...er, role: null }))
-  }
+  // Vendor fields
+  const [serviceName,    setServiceName]    = useState('')
+  const [serviceCity,    setServiceCity]    = useState('')
+  const [serviceAddress, setServiceAddress] = useState('')
 
-  const handleSubmit = async (e) => {
+  // OTP state
+  const [otp,          setOtp]          = useState('')
+  const [confirmation, setConfirmation] = useState(null)
+  const [otpLoading,   setOtpLoading]   = useState(false)
+
+  useEffect(() => { dispatch(clearError()) }, [role, authMethod, dispatch])
+
+  // ── Email registration ────────────────────────────────────────────────────
+  const handleEmailRegister = async (e) => {
     e.preventDefault()
-    const trimmed = {
-      name:     form.name.trim(),
-      email:    form.email.trim().toLowerCase(),
-      phone:    form.phone.trim(),
-      password: form.password,
-      role:     form.role,
+    const payload = {
+      name, email, phone, password, role,
+      ...(role === 'center_admin' && {
+        rentalService: { name: serviceName, city: serviceCity, address: serviceAddress },
+      }),
     }
-    const errs = validateRegisterForm(trimmed)
-    if (hasErrors(errs)) { setErrors(errs); return }
-
-    setLoading(true)
-    try {
-      const result = await dispatch(registerUser(trimmed)).unwrap()
-      toast.success('Account created! Welcome to HubDrive.')
-      navigate(result.user.role === 'center_admin' ? '/vendor' : '/dashboard', { replace: true })
-    } catch (err) {
-      toast.error(err || 'Registration failed')
-    } finally {
-      setLoading(false)
+    const res = await dispatch(registerUser(payload))
+    if (res.meta.requestStatus === 'fulfilled') {
+      toast.success('Account created!')
+      navigate(role === 'center_admin' ? '/vendor' : '/dashboard', { replace: true })
     }
   }
 
+  // ── Send OTP ──────────────────────────────────────────────────────────────
+  const handleSendOTP = async () => {
+    if (!name.trim())     return toast.error('Enter your name')
+    if (!email.trim())    return toast.error('Enter your email')
+    if (phone.length !== 10) return toast.error('Enter a valid 10-digit phone number')
+    if (role === 'center_admin' && (!serviceName || !serviceCity)) {
+      return toast.error('Enter your rental service name and city')
+    }
+
+    setOtpLoading(true)
+    try {
+      const result = await sendPhoneOTP(phone)
+      setConfirmation(result)
+      setStep(2)
+      toast.success('OTP sent to +91' + phone)
+    } catch (err) {
+      toast.error(err.message || 'Failed to send OTP')
+    } finally {
+      setOtpLoading(false)
+    }
+  }
+
+  // ── Verify OTP + register ─────────────────────────────────────────────────
+  const handleVerifyAndRegister = async (e) => {
+    e.preventDefault()
+    if (otp.length !== 6) return toast.error('Enter the 6-digit OTP')
+    setOtpLoading(true)
+    try {
+      const firebaseToken = await confirmPhoneOTP(confirmation, otp)
+      const payload = {
+        name, email, password, role, firebaseToken,
+        ...(role === 'center_admin' && {
+          rentalService: { name: serviceName, city: serviceCity, address: serviceAddress },
+        }),
+      }
+      const res = await dispatch(registerWithPhone(payload))
+      if (res.meta.requestStatus === 'fulfilled') {
+        toast.success('Account created with verified phone!')
+        navigate(role === 'center_admin' ? '/vendor' : '/dashboard', { replace: true })
+      }
+    } catch (err) {
+      toast.error(err.message || 'OTP verification failed')
+    } finally {
+      setOtpLoading(false)
+    }
+  }
+
+  const handleGoogleRegister = () => {
+    const apiBase = import.meta.env.VITE_API_BASE_URL?.replace('/api', '') ||
+                    `http://${window.location.hostname}:5000`
+    window.location.href = `${apiBase}/api/auth/google`
+  }
+
+  // ── OTP step ──────────────────────────────────────────────────────────────
+  if (step === 2) {
+    return (
+      <div className="min-h-screen bg-brand-black flex items-center justify-center p-4">
+        <div id="recaptcha-container" />
+        <div className="w-full max-w-md animate-[fadeUp_0.4s_ease_forwards]">
+          <div className="text-center mb-8">
+            <span className="font-display text-4xl text-brand-amber">HUB<span className="text-brand-cream">DRIVE</span></span>
+          </div>
+          <div className="card p-8 border border-white/10">
+            <h1 className="font-display text-3xl text-brand-cream mb-2">Verify Phone</h1>
+            <p className="font-mono text-xs text-brand-muted mb-6">
+              OTP sent to <span className="text-brand-amber">+91{phone}</span>
+            </p>
+
+            {error && (
+              <div className="mb-4 p-3 bg-brand-red/10 border border-brand-red/20 font-mono text-xs text-brand-red">{error}</div>
+            )}
+
+            <form onSubmit={handleVerifyAndRegister} className="space-y-4">
+              <input
+                type="tel" value={otp}
+                onChange={e => setOtp(e.target.value.replace(/\D/g,'').slice(0,6))}
+                placeholder="6-digit OTP" maxLength={6} autoFocus
+                className="input-field text-center tracking-[0.5em] text-2xl font-mono"
+              />
+              <button type="submit" disabled={otpLoading || otp.length !== 6}
+                className="btn-primary w-full flex items-center justify-center gap-2 py-3">
+                {otpLoading
+                  ? <span className="w-4 h-4 border-2 border-brand-black/30 border-t-brand-black rounded-full animate-spin" />
+                  : <><ArrowRight size={16} /> Create Account</>
+                }
+              </button>
+              <button type="button" onClick={() => { setStep(1); setOtp('') }}
+                className="w-full font-mono text-xs text-brand-muted hover:text-brand-amber transition-colors">
+                ← Go back
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // ── Main form ─────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-brand-black flex">
-      {/* Left brand panel */}
-      <div className="hidden lg:flex flex-col justify-between w-5/12 bg-brand-slate border-r border-white/8 p-12">
-        <Link to="/" className="font-display text-3xl text-brand-amber tracking-wider">
-          HUB<span className="text-brand-cream">DRIVE</span>
-        </Link>
-
-        <div>
-          <span className="section-eyebrow">Join the network</span>
-          <h2 className="font-display text-5xl text-brand-cream leading-none mb-6">
-            Move vehicles.<br/>
-            Move <span className="text-brand-amber">forward.</span>
-          </h2>
-
-          {/* Feature list */}
-          {[
-            { icon: '🗺️', text: 'Hub-to-Hub rentals across India' },
-            { icon: '📋', text: 'OCR-powered instant KYC verification' },
-            { icon: '📍', text: 'Live GPS tracking via Socket.io' },
-            { icon: '💬', text: 'Real-time vendor–customer chat' },
-            { icon: '💳', text: 'Secure wallet & deposits' },
-          ].map(({ icon, text }) => (
-            <div key={text} className="flex items-center gap-3 mb-3">
-              <span className="text-lg">{icon}</span>
-              <span className="text-brand-muted text-sm">{text}</span>
-            </div>
-          ))}
+    <div className="min-h-screen bg-brand-black flex items-center justify-center p-4">
+      <div id="recaptcha-container" />
+      <div className="w-full max-w-lg animate-[fadeUp_0.4s_ease_forwards]">
+        <div className="text-center mb-8">
+          <Link to="/">
+            <span className="font-display text-4xl text-brand-amber tracking-wider">
+              HUB<span className="text-brand-cream">DRIVE</span>
+            </span>
+          </Link>
+          <p className="font-mono text-xs text-brand-muted mt-2 tracking-widest uppercase">
+            Create your account
+          </p>
         </div>
 
-        <p className="font-mono text-xs text-brand-muted tracking-wider">
-          © 2024 HubDrive — Decentralized Rentals
-        </p>
-      </div>
+        <div className="card p-8 border border-white/10">
+          {/* Role toggle */}
+          <div className="flex mb-6 bg-brand-mid/40 p-1">
+            {[['customer','🧑 Customer'], ['center_admin','🏪 Vendor']].map(([r, label]) => (
+              <button key={r} onClick={() => setRole(r)}
+                className={`flex-1 py-2 font-mono text-xs tracking-widest uppercase transition-colors
+                  ${role === r ? 'bg-brand-amber text-brand-black' : 'text-brand-muted hover:text-brand-cream'}`}>
+                {label}
+              </button>
+            ))}
+          </div>
 
-      {/* Right form panel */}
-      <div className="flex-1 flex items-center justify-center p-8 overflow-y-auto">
-        <div className="w-full max-w-md py-8">
-          <Link to="/" className="lg:hidden font-display text-2xl text-brand-amber tracking-wider block mb-8">
-            HUB<span className="text-brand-cream">DRIVE</span>
-          </Link>
+          {error && (
+            <div className="mb-4 p-3 bg-brand-red/10 border border-brand-red/20 font-mono text-xs text-brand-red">{error}</div>
+          )}
 
-          <span className="section-eyebrow">Get started</span>
-          <h1 className="font-display text-5xl text-brand-cream mb-2">Create Account</h1>
-          <p className="text-brand-muted text-sm mb-8">
-            Already have one?{' '}
-            <Link to="/login" className="text-brand-amber hover:underline">Sign in</Link>
-          </p>
+          {/* Auth method toggle */}
+          <div className="flex gap-2 mb-5">
+            {[['email','Email'], ['phone','Phone OTP']].map(([m, label]) => (
+              <button key={m} onClick={() => setAuthMethod(m)}
+                className={`px-3 py-1.5 font-mono text-xs border transition-colors
+                  ${authMethod === m
+                    ? 'border-brand-amber text-brand-amber bg-brand-amber/10'
+                    : 'border-white/10 text-brand-muted hover:border-white/30'
+                  }`}>
+                {label}
+              </button>
+            ))}
+          </div>
 
-          <form onSubmit={handleSubmit} noValidate className="space-y-5">
-            {/* Role selector */}
-            <div>
-              <label className="input-label">I want to</label>
-              <div className="grid grid-cols-2 gap-2">
-                {[
-                  { value: 'customer',     icon: User, label: 'Rent Vehicles',  sub: 'Customer' },
-                  { value: 'center_admin', icon: Car,  label: 'List My Fleet',  sub: 'Vendor'   },
-                ].map(({ value, icon: Icon, label, sub }) => (
-                  <button
-                    key={value}
-                    type="button"
-                    onClick={() => setRole(value)}
-                    className={`
-                      flex items-center gap-3 p-4 border text-left transition-all duration-200
-                      ${form.role === value
-                        ? 'border-brand-amber bg-brand-amber/8 text-brand-cream'
-                        : 'border-white/10 bg-brand-mid/40 text-brand-muted hover:border-white/25'}
-                    `}
-                  >
-                    <Icon size={20} className={form.role === value ? 'text-brand-amber' : ''} />
-                    <div>
-                      <div className="text-sm font-medium">{label}</div>
-                      <div className="font-mono text-xs opacity-60">{sub}</div>
-                    </div>
-                  </button>
-                ))}
-              </div>
-              {errors.role && (
-                <p className="flex items-center gap-1 mt-1.5 font-mono text-xs text-brand-red">
-                  <AlertCircle size={11} />{errors.role}
-                </p>
-              )}
-            </div>
-
-            {/* Name */}
+          <div className="space-y-4">
+            {/* Common fields */}
             <div>
               <label className="input-label">Full Name</label>
-              <input
-                type="text" name="name"
-                value={form.name} onChange={handleChange}
-                placeholder="Arjun Sharma"
-                className={`input-field ${errors.name ? 'border-brand-red/50' : ''}`}
-                autoComplete="name"
-              />
-              {errors.name && (
-                <p className="flex items-center gap-1 mt-1.5 font-mono text-xs text-brand-red">
-                  <AlertCircle size={11} />{errors.name}
-                </p>
-              )}
+              <div className="relative">
+                <User size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-brand-muted" />
+                <input value={name} onChange={e => setName(e.target.value)}
+                  placeholder="Your full name" className="input-field pl-9" />
+              </div>
             </div>
 
-            {/* Email */}
             <div>
-              <label className="input-label">Email Address</label>
-              <input
-                type="email" name="email"
-                value={form.email} onChange={handleChange}
-                placeholder="you@example.com"
-                className={`input-field ${errors.email ? 'border-brand-red/50' : ''}`}
-                autoComplete="email"
-              />
-              {errors.email && (
-                <p className="flex items-center gap-1 mt-1.5 font-mono text-xs text-brand-red">
-                  <AlertCircle size={11} />{errors.email}
-                </p>
-              )}
+              <label className="input-label">Email</label>
+              <div className="relative">
+                <Mail size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-brand-muted" />
+                <input type="email" value={email} onChange={e => setEmail(e.target.value)}
+                  placeholder="you@email.com" className="input-field pl-9" />
+              </div>
             </div>
 
-            {/* Phone */}
             <div>
               <label className="input-label">Mobile Number</label>
-              <div className="flex">
-                <span className="input-field w-16 flex-shrink-0 flex items-center justify-center text-brand-muted border-r-0 font-mono text-xs">
-                  +91
-                </span>
-                <input
-                  type="tel" name="phone"
-                  value={form.phone} onChange={handleChange}
-                  placeholder="9876543210"
-                  maxLength={10}
-                  className={`input-field flex-1 ${errors.phone ? 'border-brand-red/50' : ''}`}
-                  autoComplete="tel"
-                />
+              <div className="flex gap-2">
+                <div className="flex items-center px-3 bg-brand-mid border border-white/10 font-mono text-sm text-brand-muted">+91</div>
+                <div className="relative flex-1">
+                  <Phone size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-brand-muted" />
+                  <input type="tel" value={phone}
+                    onChange={e => setPhone(e.target.value.replace(/\D/g,'').slice(0,10))}
+                    placeholder="9876543210" maxLength={10} className="input-field pl-9" />
+                </div>
               </div>
-              {errors.phone && (
-                <p className="flex items-center gap-1 mt-1.5 font-mono text-xs text-brand-red">
-                  <AlertCircle size={11} />{errors.phone}
-                </p>
-              )}
             </div>
 
-            {/* Password */}
-            <div>
-              <label className="input-label">Password</label>
-              <div className="relative">
-                <input
-                  type={showPass ? 'text' : 'password'}
-                  name="password"
-                  value={form.password} onChange={handleChange}
-                  placeholder="Minimum 6 characters"
-                  className={`input-field pr-12 ${errors.password ? 'border-brand-red/50' : ''}`}
-                  autoComplete="new-password"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPass(s => !s)}
-                  className="absolute right-4 top-1/2 -translate-y-1/2 text-brand-muted hover:text-brand-amber transition-colors"
-                >
-                  {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
-                </button>
-              </div>
-              {/* Strength indicator */}
-              {form.password && (
-                <div className="flex gap-1 mt-2">
-                  {[1,2,3,4].map(i => (
-                    <div
-                      key={i}
-                      className={`h-0.5 flex-1 transition-colors ${
-                        form.password.length >= i * 3
-                          ? i <= 2 ? 'bg-brand-red' : i === 3 ? 'bg-brand-amber' : 'bg-green-500'
-                          : 'bg-white/10'
-                      }`}
-                    />
-                  ))}
+            {authMethod === 'email' && (
+              <div>
+                <label className="input-label">Password</label>
+                <div className="relative">
+                  <Lock size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-brand-muted" />
+                  <input type="password" value={password} onChange={e => setPassword(e.target.value)}
+                    placeholder="Min 6 characters" className="input-field pl-9" />
                 </div>
-              )}
-              {errors.password && (
-                <p className="flex items-center gap-1 mt-1.5 font-mono text-xs text-brand-red">
-                  <AlertCircle size={11} />{errors.password}
-                </p>
-              )}
-            </div>
+              </div>
+            )}
+
+            {/* Vendor rental service fields */}
+            {role === 'center_admin' && (
+              <div className="space-y-3 pt-2 border-t border-white/8">
+                <p className="font-mono text-xs text-brand-amber tracking-widest uppercase">Rental Service Details</p>
+                <div>
+                  <label className="input-label">Business Name</label>
+                  <div className="relative">
+                    <Building size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-brand-muted" />
+                    <input value={serviceName} onChange={e => setServiceName(e.target.value)}
+                      placeholder="e.g. Varanasi Rides" className="input-field pl-9" />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="input-label">City</label>
+                    <div className="relative">
+                      <MapPin size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-brand-muted" />
+                      <input value={serviceCity} onChange={e => setServiceCity(e.target.value)}
+                        placeholder="Varanasi" className="input-field pl-9" />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="input-label">Address <span className="text-brand-muted">(optional)</span></label>
+                    <input value={serviceAddress} onChange={e => setServiceAddress(e.target.value)}
+                      placeholder="Hub address" className="input-field" />
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* Submit */}
-            <button
-              type="submit"
-              disabled={loading}
-              className="btn-primary w-full flex items-center justify-center gap-3 mt-2"
-            >
-              {loading ? (
-                <span className="w-4 h-4 border-2 border-brand-black/30 border-t-brand-black rounded-full animate-spin" />
-              ) : (
-                <>Create Account <ArrowRight size={16} /></>
-              )}
-            </button>
+            {authMethod === 'email' ? (
+              <button
+                onClick={handleEmailRegister}
+                disabled={loading}
+                className="btn-primary w-full flex items-center justify-center gap-2 py-3 mt-2"
+              >
+                {loading
+                  ? <span className="w-4 h-4 border-2 border-brand-black/30 border-t-brand-black rounded-full animate-spin" />
+                  : <><ArrowRight size={16} /> Create Account</>
+                }
+              </button>
+            ) : (
+              <button
+                onClick={handleSendOTP}
+                disabled={otpLoading}
+                className="btn-primary w-full flex items-center justify-center gap-2 py-3 mt-2"
+              >
+                {otpLoading
+                  ? <span className="w-4 h-4 border-2 border-brand-black/30 border-t-brand-black rounded-full animate-spin" />
+                  : 'Send OTP to Verify Phone'
+                }
+              </button>
+            )}
+          </div>
 
-            <p className="font-mono text-xs text-brand-muted text-center leading-relaxed">
-              By registering, you agree to our Terms of Service and Privacy Policy.
-            </p>
-          </form>
+          {/* Divider + Google */}
+          <div className="flex items-center gap-3 my-5">
+            <div className="flex-1 h-px bg-white/10" />
+            <span className="font-mono text-xs text-brand-muted">OR</span>
+            <div className="flex-1 h-px bg-white/10" />
+          </div>
+
+          <button onClick={handleGoogleRegister}
+            className="w-full flex items-center justify-center gap-3 py-3 border border-white/10
+                       bg-white/5 hover:bg-white/10 transition-colors font-mono text-sm text-brand-cream">
+            <svg width="18" height="18" viewBox="0 0 24 24">
+              <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+              <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+              <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+              <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+            </svg>
+            Continue with Google
+          </button>
+
+          <p className="text-center font-mono text-xs text-brand-muted mt-6">
+            Already have an account?{' '}
+            <Link to="/login" className="text-brand-amber hover:underline">Sign in</Link>
+          </p>
         </div>
       </div>
     </div>

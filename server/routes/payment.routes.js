@@ -1,9 +1,16 @@
 const router = require('express').Router()
-const { protect }      = require('../middleware/auth.middleware')
-const { customerOnly } = require('../middleware/role.middleware')
-const { createOrder, verifyPayment } = require('../controllers/payment.controller')
+const { protect } = require('../middleware/auth.middleware')
+const {
+  createOrder, verifyPayment,
+  saveBankDetails, withdrawToBank,
+} = require('../controllers/payment.controller')
 
-router.post('/create-order', protect, customerOnly, createOrder)
-router.post('/verify',       protect, customerOnly, verifyPayment)
+// Top-up (customers only)
+router.post('/create-order', protect, createOrder)
+router.post('/verify',       protect, verifyPayment)
+
+// Withdrawal (both customers and vendors)
+router.post('/save-bank',  protect, saveBankDetails)
+router.post('/withdraw',   protect, withdrawToBank)
 
 module.exports = router

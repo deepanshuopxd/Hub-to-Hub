@@ -81,6 +81,8 @@ export const formatBytes = (bytes) => {
 }
 
 // ── Hub display ───────────────────────────────────────────────────────────────
+// HUBS are now dynamic — fetched from /api/vendors/cities-with-vehicles
+// Keeping a small fallback list for forms that haven't migrated yet
 export const HUBS = [
   { name: 'Mumbai Central Hub',    city: 'Mumbai',    lat: 18.9696, lng: 72.8196 },
   { name: 'Pune Station Hub',      city: 'Pune',      lat: 18.5204, lng: 73.8567 },
@@ -88,6 +90,31 @@ export const HUBS = [
   { name: 'Delhi CP Hub',          city: 'Delhi',     lat: 28.6315, lng: 77.2167 },
   { name: 'Hyderabad HITEC Hub',   city: 'Hyderabad', lat: 17.4435, lng: 78.3772 },
   { name: 'Chennai Anna Hub',      city: 'Chennai',   lat: 13.0827, lng: 80.2707 },
-  { name: 'Lonavala Hill Hub',     city: 'Lonavala',  lat: 18.7546, lng: 73.4062 },
+  { name: 'Lonavala Hill Hub',     city: 'Lonavala',  lat: 18.7481, lng: 73.4072 },
   { name: 'Goa Panaji Hub',        city: 'Goa',       lat: 15.4909, lng: 73.8278 },
+  { name: 'Varanasi Ghats Hub',    city: 'Varanasi',  lat: 25.3176, lng: 82.9739 },
+  { name: 'Ayodhya Hub',           city: 'Ayodhya',   lat: 26.7922, lng: 82.1998 },
+  { name: 'Jaipur Pink Hub',       city: 'Jaipur',    lat: 26.9124, lng: 75.7873 },
+  { name: 'Agra Taj Hub',          city: 'Agra',      lat: 27.1767, lng: 78.0081 },
 ]
+
+// Format duration for display
+export const formatDuration = (hours) => {
+  if (!hours) return '—'
+  if (hours < 24) return `${hours}h`
+  const days = Math.floor(hours / 24)
+  const rem  = hours % 24
+  return rem > 0 ? `${days}d ${rem}h` : `${days}d`
+}
+
+// Calculate hours between two datetimes
+export const calculateHours = (start, end) => {
+  const ms = new Date(end) - new Date(start)
+  return Math.max(1, Math.ceil(ms / (1000 * 60 * 60)))
+}
+
+// Calculate days (ceil) between two datetimes
+export const calculateDaysFromDateTime = (start, end) => {
+  const hours = calculateHours(start, end)
+  return Math.max(1, Math.ceil(hours / 24))
+}

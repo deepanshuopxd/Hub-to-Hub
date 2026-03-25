@@ -13,6 +13,7 @@
     "@reduxjs/toolkit": "^2.11.2",
     "axios": "^1.13.6",
     "date-fns": "^3.6.0",
+    "firebase": "^12.11.0",
     "lucide-react": "^0.378.0",
     "mapbox-gl": "^3.19.1",
     "razorpay": "^2.9.6",

@@ -10,7 +10,7 @@ const chatSlice = createSlice({
     activeRoom:     null,    // current bookingId
     socket:         null,    // Socket.io instance (non-serializable, excluded from checks)
     connected:      false,
-    typing:         {},      // { [bookingId]: boolean }
+    typing:         {},      // { [bookingId]: { isTyping, userName, role } }
     unreadCounts:   {},      // { [bookingId]: number }
   },
   reducers: {
@@ -46,8 +46,8 @@ const chatSlice = createSlice({
       }
     },
     setTyping: (state, action) => {
-      const { bookingId, isTyping } = action.payload
-      state.typing[bookingId] = isTyping
+      const { bookingId, isTyping, userName, role } = action.payload
+      state.typing[bookingId] = { isTyping, userName, role }
     },
     clearRoom: (state, action) => {
       delete state.rooms[action.payload]
@@ -72,7 +72,7 @@ export const {
 export const selectRoomMessages  = (bookingId) => (state) => state.chat.rooms[bookingId] || []
 export const selectActiveRoom    = (state) => state.chat.activeRoom
 export const selectChatConnected = (state) => state.chat.connected
-export const selectTyping        = (bookingId) => (state) => state.chat.typing[bookingId] || false
+export const selectTyping        = (bookingId) => (state) => state.chat.typing[bookingId] || { isTyping: false }
 export const selectUnreadCount   = (bookingId) => (state) => state.chat.unreadCounts[bookingId] || 0
 export const selectTotalUnread   = (state) =>
   Object.values(state.chat.unreadCounts).reduce((a, b) => a + b, 0)

@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
   User, Phone, Mail, Shield, FileText,
   MapPin, Calendar, IndianRupee, Eye,
-  CheckCircle, XCircle, AlertTriangle, Car,
+  CheckCircle, XCircle, AlertTriangle, Car, Search,
 } from 'lucide-react'
+import api from '../../services/api'
 import Modal       from '../ui/Modal'
 import { formatINR, formatDate } from '../../utils/formatters'
 
@@ -46,6 +47,88 @@ const InfoRow = ({ icon: Icon, label, value, mono = false }) => (
     </div>
   </div>
 )
+
+
+// ── Destination vendor selector ───────────────────────────────────────────────
+const EndVendorSelector = ({ booking, endCity, onAssigned }) => {
+  const [query,    setQuery]    = useState(endCity || '')
+  const [results,  setResults]  = useState([])
+  const [selected, setSelected] = useState(booking.endVendor || null)
+  const [saving,   setSaving]   = useState(false)
+
+  const search = async (q) => {
+    if (q.length < 2) { setResults([]); return }
+    try {
+      const { data } = await api.get(`/vendors/search?city=${encodeURIComponent(q)}`)
+      setResults(data.vendors)
+    } catch { setResults([]) }
+  }
+
+  useEffect(() => {
+    const t = setTimeout(() => search(query), 350)
+    return () => clearTimeout(t)
+  }, [query])
+
+  const handleAssign = async (vendor) => {
+    setSaving(true)
+    try {
+      await api.patch(`/bookings/${booking._id}/assign-end-vendor`, { endVendorId: vendor.vendorId })
+      setSelected(vendor)
+      onAssigned(vendor)
+    } catch (err) {
+      console.error('Failed to assign vendor', err)
+    } finally { setSaving(false) }
+  }
+
+  if (selected && selected.serviceName) {
+    return (
+      <div className="p-3 bg-green-500/10 border border-green-500/20 space-y-1">
+        <p className="font-mono text-xs text-brand-muted uppercase tracking-wider">Destination Vendor</p>
+        <p className="text-sm text-green-400 font-medium">{selected.serviceName || selected.name}</p>
+        <p className="font-mono text-xs text-brand-muted">{selected.city || booking.endHub?.city}</p>
+        <button onClick={() => setSelected(null)} className="font-mono text-xs text-brand-amber hover:underline">
+          Change
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-2">
+      <p className="font-mono text-xs text-brand-muted uppercase tracking-wider">
+        Assign Destination Rental Service
+        <span className="text-brand-red ml-1">*</span>
+      </p>
+      <p className="font-mono text-[10px] text-brand-muted">
+        Search for a rental service in {booking.endHub?.city || 'destination city'} that will receive the vehicle.
+      </p>
+      <div className="relative">
+        <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-brand-muted" />
+        <input
+          value={query}
+          onChange={e => setQuery(e.target.value)}
+          placeholder={"Search in " + (booking.endHub?.city || 'destination city')}
+          className="input-field pl-8 text-sm"
+        />
+      </div>
+      {results.length > 0 && (
+        <div className="border border-white/10 bg-brand-mid/60 max-h-36 overflow-y-auto">
+          {results.map(v => (
+            <button
+              key={v.vendorId}
+              onClick={() => handleAssign(v)}
+              disabled={saving}
+              className="w-full text-left px-3 py-2.5 hover:bg-white/5 transition-colors border-b border-white/5 last:border-0"
+            >
+              <p className="text-sm text-brand-cream">{v.serviceName}</p>
+              <p className="font-mono text-xs text-brand-muted">{v.city}</p>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
 
 // ── Main component ────────────────────────────────────────────────────────────
 const BookingDetailModal = ({ booking, onClose, onAccept, onDecline, loading }) => {

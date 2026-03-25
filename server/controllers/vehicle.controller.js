@@ -76,39 +76,80 @@ const getVehicleById = asyncHandler(async (req, res) => {
 
 // POST /api/vehicles
 const createVehicle = asyncHandler(async (req, res) => {
-  const { make, model, year, plateNumber, pricePerDay, category, description, currentHub } = req.body
+  const {
+    make, model, year, plateNumber, pricePerDay,
+    category, description, currentHub, homeService, securityDeposit,
+  } = req.body
 
-  if (!make || !model || !year || !plateNumber || !pricePerDay || !currentHub) {
+  if (!make || !model || !year || !plateNumber || !pricePerDay) {
     return res.status(400).json({
-      message: 'make, model, year, plateNumber, pricePerDay and currentHub are all required',
+      message: 'make, model, year, plateNumber and pricePerDay are all required',
     })
   }
 
-  let hub
-  try {
-    hub = typeof currentHub === 'string' ? JSON.parse(currentHub) : currentHub
-  } catch {
-    hub = { name: currentHub, city: 'Unknown', lat: 0, lng: 0 }
+  // currentHub — from vendor's rental service (sent as JSON string)
+  let hub = null
+  if (currentHub) {
+    try {
+      hub = typeof currentHub === 'string' ? JSON.parse(currentHub) : currentHub
+    } catch {
+      hub = { name: currentHub, city: 'Unknown', lat: 0, lng: 0 }
+    }
   }
 
-  if (!hub.name) {
-    return res.status(400).json({ message: 'currentHub must include at least a hub name' })
+  // Fallback: build hub from vendor's rentalService if not sent
+  if (!hub || !hub.name) {
+    const vendor = await require('../models/User.model').findById(req.user._id).select('rentalService')
+    if (vendor?.rentalService?.name) {
+      hub = {
+        name:          vendor.rentalService.name,
+        city:          vendor.rentalService.city,
+        address:       vendor.rentalService.address || '',
+        lat:           vendor.rentalService.lat  || 0,
+        lng:           vendor.rentalService.lng  || 0,
+        vendorId:      req.user._id,
+        rentalService: vendor.rentalService.name,
+      }
+    } else {
+      return res.status(400).json({ message: 'currentHub required — complete rental service registration first' })
+    }
+  }
+
+  // homeService — which vendor registered this vehicle
+  let parsedHomeService = null
+  if (homeService) {
+    try {
+      parsedHomeService = typeof homeService === 'string' ? JSON.parse(homeService) : homeService
+    } catch { parsedHomeService = null }
+  }
+  if (!parsedHomeService) {
+    const vendor = await require('../models/User.model').findById(req.user._id).select('rentalService')
+    parsedHomeService = {
+      vendorId: req.user._id,
+      name:     vendor?.rentalService?.name || '',
+      city:     vendor?.rentalService?.city || '',
+      address:  vendor?.rentalService?.address || '',
+      lat:      vendor?.rentalService?.lat || 0,
+      lng:      vendor?.rentalService?.lng || 0,
+    }
   }
 
   const images = req.files?.length > 0 ? req.files.map(f => f.path) : []
 
   const vehicle = await Vehicle.create({
-    make:        make.trim(),
-    model:       model.trim(),
-    year:        Number(year),
-    plateNumber: plateNumber.trim().toUpperCase(),
-    pricePerDay: Number(pricePerDay),
-    category:    category || 'sedan',
-    description: description?.trim(),
-    currentHub:  hub,
+    make:            make.trim(),
+    model:           model.trim(),
+    year:            Number(year),
+    plateNumber:     plateNumber.trim().toUpperCase(),
+    pricePerDay:     Number(pricePerDay),
+    securityDeposit: securityDeposit ? Number(securityDeposit) : 2000,
+    category:        category || 'sedan',
+    description:     description?.trim(),
+    currentHub:      hub,
+    homeService:     parsedHomeService,
     images,
-    owner:       req.user._id,
-    hubHistory:  [{ hub, arrivedAt: new Date() }],
+    owner:           req.user._id,
+    hubHistory:      [{ hub, arrivedAt: new Date() }],
   })
 
   res.status(201).json({ message: 'Vehicle added to fleet', vehicle })
@@ -123,7 +164,7 @@ const updateVehicle = asyncHandler(async (req, res) => {
   }
 
   // All editable fields including plateNumber
-  const editable = ['make', 'model', 'year', 'plateNumber', 'pricePerDay', 'category', 'description', 'isAvailable']
+  const editable = ['make', 'model', 'year', 'plateNumber', 'pricePerDay', 'securityDeposit', 'category', 'description', 'isAvailable']
   editable.forEach(f => {
     if (req.body[f] !== undefined) vehicle[f] = req.body[f]
   })
