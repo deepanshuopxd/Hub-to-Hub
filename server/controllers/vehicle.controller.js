@@ -6,40 +6,86 @@ const asyncHandler = (fn) => (req, res, next) =>
 
 // GET /api/vehicles
 const getAllVehicles = asyncHandler(async (req, res) => {
-  const { hub, category, minPrice, maxPrice, available = 'true' } = req.query
+  const { hub, category, minPrice, maxPrice, available = 'true', vendorId } = req.query
   const filter = { isActive: true }
   if (available === 'true') filter.isAvailable = true
-  if (hub)      filter['currentHub.name'] = { $regex: hub, $options: 'i' }
+  if (hub)      filter['currentHub.city'] = { $regex: hub, $options: 'i' }
   if (category) filter.category = category
+  if (vendorId) {
+    // Filter vehicles belonging to a specific vendor's rental service
+    filter.$or = [
+      { owner: vendorId },
+      { 'homeService.vendorId': vendorId },
+      { 'currentHub.vendorId': vendorId },
+    ]
+  }
   if (minPrice || maxPrice) {
     filter.pricePerDay = {}
     if (minPrice) filter.pricePerDay.$gte = Number(minPrice)
     if (maxPrice) filter.pricePerDay.$lte = Number(maxPrice)
   }
   const vehicles = await Vehicle.find(filter)
-    .populate('owner', 'name phone homeHub')
+    .populate('owner', 'name phone rentalService')
     .sort({ pricePerDay: 1 })
     .lean()
   res.status(200).json({ count: vehicles.length, vehicles })
 })
 
 // GET /api/vehicles/vendor/my-fleet
+// Returns:
+//   1. Vehicles originally registered by this vendor (homeService.vendorId)
+//   2. Vehicles currently AT this vendor's hub (currentHub.vendorId) — relocated vehicles
+// Both sets shown so vendor knows what's on their lot
 const getVendorFleet = asyncHandler(async (req, res) => {
-  const vehicles = await Vehicle.find({ owner: req.user._id, isActive: true })
-    .sort({ createdAt: -1 })
-    .lean()
+  const vendorId = req.user._id
+
+  const vehicles = await Vehicle.find({
+    isActive: true,
+    $or: [
+      { owner:                  vendorId },
+      { 'homeService.vendorId': vendorId },
+      { 'currentHub.vendorId':  vendorId },
+    ],
+  }).sort({ createdAt: -1 }).lean()
+
+  // Deduplicate by _id
+  const seen = new Set()
+  const unique = vehicles.filter(v => {
+    if (seen.has(v._id.toString())) return false
+    seen.add(v._id.toString())
+    return true
+  })
+
   const withStats = await Promise.all(
-    vehicles.map(async (v) => {
+    unique.map(async (v) => {
       const [activeCount, revenueResult] = await Promise.all([
-        Booking.countDocuments({ vehicle: v._id, status: { $in: ['pending','active','in_transit'] } }),
+        Booking.countDocuments({
+          vehicle:     v._id,
+          startVendor: vendorId,
+          status:      { $in: ['pending','awaiting_destination_vendor','active','in_transit','dropped_at_destination','completed_by_destination'] },
+        }),
         Booking.aggregate([
-          { $match: { vehicle: v._id, status: 'completed' } },
+          { $match: { vehicle: v._id, startVendor: vendorId, status: 'completed' } },
           { $group: { _id: null, total: { $sum: '$rentalCost' } } },
         ]),
       ])
-      return { ...v, activeBookings: activeCount, totalRevenue: revenueResult[0]?.total || 0 }
+
+      const isOriginallyMine = v.owner?.toString() === vendorId.toString() ||
+                               v.homeService?.vendorId?.toString() === vendorId.toString()
+      const isCurrentlyHere  = v.currentHub?.vendorId?.toString() === vendorId.toString()
+
+      return {
+        ...v,
+        activeBookings:   activeCount,
+        totalRevenue:     revenueResult[0]?.total || 0,
+        isOriginallyMine,
+        isCurrentlyHere,
+        // originalService = where this vehicle was originally registered
+        originalService: v.homeService?.name || 'Unknown',
+      }
     })
   )
+
   res.status(200).json({ count: withStats.length, vehicles: withStats })
 })
 

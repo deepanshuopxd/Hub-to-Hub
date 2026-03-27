@@ -1,16 +1,39 @@
-const Booking             = require('../models/Booking.model')
-const Vehicle             = require('../models/Vehicle.model')
-const User                = require('../models/User.model')
-const { calculatePrice }  = require('../utils/calculatePrice')
+const Booking            = require('../models/Booking.model')
+const Vehicle            = require('../models/Vehicle.model')
+const User               = require('../models/User.model')
+const { calculatePrice } = require('../utils/calculatePrice')
 
 const asyncHandler = (fn) => (req, res, next) =>
   Promise.resolve(fn(req, res, next)).catch(next)
 
+// ── Helper: populate booking fully ───────────────────────────────────────────
+const populateBooking = (query) =>
+  query
+    .populate('vehicle',     'make model year plateNumber images currentHub securityDeposit homeService owner')
+    .populate('user',        'name email phone kyc')
+    .populate('startVendor', 'name email phone rentalService')
+    .populate('endVendor',   'name email phone rentalService')
+
+// ── Helper: check if user is a party ─────────────────────────────────────────
+const isParty = (booking, userId) => {
+  const uid = userId.toString()
+  return [
+    booking.user?._id?.toString()        || booking.user?.toString(),
+    booking.startVendor?._id?.toString() || booking.startVendor?.toString(),
+    booking.endVendor?._id?.toString()   || booking.endVendor?.toString(),
+    booking.vehicle?.owner?.toString(),
+  ].filter(Boolean).includes(uid)
+}
+
 // ─── POST /api/bookings ───────────────────────────────────────────────────────
+// Customer creates booking — goes to startVendor first
 const createBooking = asyncHandler(async (req, res) => {
   const {
-    vehicleId, startHub, endHub,
-    startDateTime, endDateTime,      // full datetime strings
+    vehicleId,
+    startHub,
+    endHub,
+    startDateTime,
+    endDateTime,
     paymentMethod = 'wallet',
   } = req.body
 
@@ -23,82 +46,68 @@ const createBooking = asyncHandler(async (req, res) => {
   if (start >= end)    return res.status(400).json({ message: 'End time must be after start time' })
   if (start < new Date()) return res.status(400).json({ message: 'Start time cannot be in the past' })
 
-  // Vehicle check
-  const vehicle = await Vehicle.findById(vehicleId).populate('owner', 'name _id rentalService')
+  const vehicle = await Vehicle.findById(vehicleId).populate('owner', 'name _id email phone rentalService')
   if (!vehicle || !vehicle.isActive)  return res.status(404).json({ message: 'Vehicle not found' })
   if (!vehicle.isAvailable)           return res.status(400).json({ message: 'Vehicle is currently unavailable' })
 
-  // Conflict check
   const isAvailable = await Booking.isVehicleAvailable(vehicleId, startDateTime, endDateTime)
-  if (!isAvailable) {
-    return res.status(409).json({ message: 'Vehicle already booked for this time period' })
-  }
+  if (!isAvailable) return res.status(409).json({ message: 'Vehicle already booked for this period' })
 
   const customer = await User.findById(req.user._id)
-
-  // Use vehicle's own securityDeposit (set by vendor)
-  const pricing = calculatePrice(
-    vehicle.pricePerDay,
-    startDateTime,
-    endDateTime,
-    startHub,
-    endHub,
-    vehicle.securityDeposit,
+  const pricing  = calculatePrice(
+    vehicle.pricePerDay, startDateTime, endDateTime,
+    startHub, endHub, vehicle.securityDeposit,
   )
 
   const totalRequired = pricing.rentalCost + pricing.deposit
 
-  // Payment handling
   if (paymentMethod === 'wallet') {
     if (customer.wallet.balance < totalRequired) {
       return res.status(400).json({
-        message:       `Insufficient wallet balance. Need ₹${totalRequired} (₹${pricing.rentalCost} rental + ₹${pricing.deposit} deposit).`,
+        message:       `Insufficient balance. Need ₹${totalRequired} (₹${pricing.rentalCost} rental + ₹${pricing.deposit} deposit).`,
         walletBalance: customer.wallet.balance,
-        rentalCost:    pricing.rentalCost,
-        depositNeeded: pricing.deposit,
         totalRequired,
       })
     }
-    // Deduct rental immediately, lock deposit
     customer.wallet.balance -= pricing.rentalCost
     await customer.lockDeposit(pricing.deposit)
   }
-  // cash/razorpay: payment happens offline or via Razorpay — just create the booking
 
-  // Mark vehicle unavailable
   vehicle.isAvailable = false
   await vehicle.save()
 
-  // Build startHub with vendor info
   const startHubData = {
-    ...startHub,
+    name:          startHub.name          || startHub.city,
+    city:          startHub.city          || startHub.name,
+    address:       startHub.address       || '',
+    lat:           startHub.lat           || 0,
+    lng:           startHub.lng           || 0,
     vendorId:      vehicle.owner._id,
-    rentalService: vehicle.owner.rentalService?.name || '',
+    rentalService: vehicle.owner.rentalService?.name || startHub.name,
   }
 
-  // endHub vendor lookup (endVendor selected by startVendor later, or pre-set if provided)
-  const endVendorId = req.body.endVendorId || null
-  const endHubData  = {
-    ...endHub,
-    vendorId:      endVendorId,
-    rentalService: req.body.endVendorServiceName || '',
+  const endHubData = {
+    name:          endHub.name          || endHub.city,
+    city:          endHub.city          || endHub.name,
+    address:       endHub.address       || '',
+    lat:           endHub.lat           || 0,
+    lng:           endHub.lng           || 0,
+    vendorId:      null,          // set later when startVendor assigns endVendor
+    rentalService: null,
   }
 
   const booking = await Booking.create({
     user:          req.user._id,
     vehicle:       vehicleId,
+    startVendor:   vehicle.owner._id,
+    endVendor:     null,
     startHub:      startHubData,
     endHub:        endHubData,
-    startVendor:   vehicle.owner._id,
-    endVendor:     endVendorId,
     startDateTime: start,
     endDateTime:   end,
     startDate:     start,
     endDate:       end,
-    totalDays:     pricing.totalDays,
-    totalHours:    pricing.totalHours,
     pricePerDay:   vehicle.pricePerDay,
-    pricePerHour:  pricing.pricePerHour,
     rentalCost:    pricing.rentalCost,
     depositAmount: pricing.deposit,
     platformFee:   pricing.platformFee,
@@ -106,147 +115,204 @@ const createBooking = asyncHandler(async (req, res) => {
     paymentMethod,
     paymentStatus: paymentMethod === 'wallet' ? 'paid' : 'pending',
     status:        'pending',
-    statusHistory: [{ status: 'pending', changedBy: req.user._id, note: 'Booking created' }],
+    statusHistory: [{ status: 'pending', changedBy: req.user._id, note: 'Booking created by customer' }],
   })
 
-  // Notify startVendor via socket
+  // Notify startVendor
   const io = req.app.get('io')
   io?.to(`vendor_${vehicle.owner._id}`).emit('new_booking_request', {
-    bookingId:    booking._id,
-    vehicleName:  `${vehicle.make} ${vehicle.model}`,
-    route:        `${startHub.city || startHub.name} → ${endHub.city || endHub.name}`,
-    totalHours:   pricing.totalHours,
-    totalDays:    pricing.totalDays,
-    rentalCost:   pricing.rentalCost,
-    customer:     customer.name,
-    isCrossCity:  startHub.city !== endHub.city,
+    bookingId:   booking._id,
+    vehicle:     `${vehicle.make} ${vehicle.model}`,
+    from:        startHubData.city,
+    to:          endHubData.city,
+    customer:    customer.name,
+    rentalCost:  pricing.rentalCost,
+    totalHours:  pricing.totalHours,
   })
 
-  const populated = await Booking.findById(booking._id)
-    .populate('vehicle',     'make model year plateNumber images currentHub')
-    .populate('user',        'name email phone')
-    .populate('startVendor', 'name rentalService')
-    .populate('endVendor',   'name rentalService')
-
-  res.status(201).json({
-    message:        'Booking created — awaiting vendor confirmation',
-    booking:        populated,
-    pricing,
-  })
+  const populated = await populateBooking(Booking.findById(booking._id))
+  res.status(201).json({ message: 'Booking created — awaiting vendor confirmation', booking: populated, pricing })
 })
 
-// ─── GET /api/bookings/my ─────────────────────────────────────────────────────
-const getMyBookings = asyncHandler(async (req, res) => {
-  const bookings = await Booking.find({ user: req.user._id })
-    .populate('vehicle',     'make model year plateNumber images category currentHub')
-    .populate('user',        'name email phone')
-    .populate('startVendor', 'name rentalService')
-    .populate('endVendor',   'name rentalService')
-    .sort({ createdAt: -1 })
-  res.status(200).json({ count: bookings.length, bookings })
-})
-
-// ─── GET /api/bookings/vendor ─────────────────────────────────────────────────
-// Returns bookings where vendor is startVendor OR endVendor
-const getVendorBookings = asyncHandler(async (req, res) => {
-  const vendorId = req.user._id
-
-  const bookings = await Booking.find({
-    $or: [
-      { startVendor: vendorId },
-      { endVendor:   vendorId },
-      // fallback: bookings from vehicles this vendor owns
-      { vehicle: { $in: await Vehicle.find({ owner: vendorId }).distinct('_id') } },
-    ],
-  })
-    .populate('vehicle',     'make model year plateNumber images category currentHub owner')
-    .populate('user',        'name email phone kyc')
-    .populate('startVendor', 'name rentalService')
-    .populate('endVendor',   'name rentalService')
-    .sort({ createdAt: -1 })
-
-  const summary = {
-    pending:      bookings.filter(b => b.status === 'pending').length,
-    active:       bookings.filter(b => b.status === 'active').length,
-    in_transit:   bookings.filter(b => b.status === 'in_transit').length,
-    completed:    bookings.filter(b => b.status === 'completed').length,
-    cancelled:    bookings.filter(b => b.status === 'cancelled').length,
-    totalRevenue: bookings
-      .filter(b => b.status === 'completed')
-      .reduce((s, b) => s + b.rentalCost, 0),
-  }
-
-  res.status(200).json({ count: bookings.length, bookings, summary })
-})
-
-// ─── GET /api/bookings/:id ────────────────────────────────────────────────────
-const getBookingById = asyncHandler(async (req, res) => {
-  const booking = await Booking.findById(req.params.id)
-    .populate('vehicle',     'make model year plateNumber images category currentHub lastKnownPosition owner')
-    .populate('user',        'name email phone kyc')
-    .populate('startVendor', 'name rentalService')
-    .populate('endVendor',   'name rentalService')
-
-  if (!booking) return res.status(404).json({ message: 'Booking not found' })
-
-  const uid        = req.user._id.toString()
-  const isCustomer = booking.user._id.toString()          === uid
-  const isStartV   = booking.startVendor?._id?.toString() === uid
-  const isEndV     = booking.endVendor?._id?.toString()   === uid
-  const isOwner    = booking.vehicle?.owner?.toString()   === uid
-
-  if (!isCustomer && !isStartV && !isEndV && !isOwner) {
-    return res.status(403).json({ message: 'Not authorised' })
-  }
-
-  res.status(200).json({ booking })
-})
-
-// ─── PATCH /api/bookings/:id/assign-end-vendor ───────────────────────────────
-// startVendor calls this to assign the destination rental service
-// before or at the time of accepting the booking
-const assignEndVendor = asyncHandler(async (req, res) => {
-  const { endVendorId } = req.body
-  if (!endVendorId) return res.status(400).json({ message: 'endVendorId required' })
+// ─── PATCH /api/bookings/:id/start-vendor-action ─────────────────────────────
+// startVendor approves (must also set endVendor) or declines
+const startVendorAction = asyncHandler(async (req, res) => {
+  const { action, endVendorId, note } = req.body
+  // action: 'approve' | 'decline'
 
   const booking = await Booking.findById(req.params.id)
   if (!booking) return res.status(404).json({ message: 'Booking not found' })
-
-  // Only startVendor can assign endVendor
   if (booking.startVendor?.toString() !== req.user._id.toString()) {
-    return res.status(403).json({ message: 'Only the start vendor can assign destination vendor' })
+    return res.status(403).json({ message: 'Only the pickup vendor can perform this action' })
+  }
+  if (booking.status !== 'pending') {
+    return res.status(400).json({ message: `Cannot act on a booking with status: ${booking.status}` })
   }
 
-  const endVendor = await User.findById(endVendorId).select('name rentalService')
-  if (!endVendor || endVendor.role !== 'center_admin') {
-    return res.status(404).json({ message: 'Destination vendor not found' })
+  if (action === 'decline') {
+    // Refund customer fully
+    const customer = await User.findById(booking.user)
+    if (booking.paymentMethod === 'wallet') {
+      customer.wallet.balance += booking.rentalCost
+      if (customer.wallet.locked >= booking.depositAmount) {
+        await customer.releaseDeposit(booking.depositAmount)
+      } else { await customer.save() }
+    }
+
+    const vehicle = await Vehicle.findById(booking.vehicle)
+    vehicle.isAvailable = true
+    await vehicle.save()
+
+    booking.status       = 'cancelled'
+    booking.cancelledBy  = req.user._id
+    booking.cancelledAt  = new Date()
+    booking.cancelReason = note || 'Declined by pickup vendor'
+    booking.statusHistory.push({ status: 'cancelled', changedBy: req.user._id, note: booking.cancelReason })
+    await booking.save()
+
+    const io = req.app.get('io')
+    io?.to(`user_${booking.user}`).emit('booking_status_change', {
+      bookingId: booking._id,
+      status:    'cancelled',
+      message:   'Your booking was declined by the vendor. Full refund issued.',
+    })
+
+    const populated = await populateBooking(Booking.findById(booking._id))
+    return res.status(200).json({ message: 'Booking declined and customer refunded', booking: populated })
   }
 
-  booking.endVendor           = endVendorId
-  booking.endHub.vendorId     = endVendorId
-  booking.endHub.rentalService= endVendor.rentalService?.name || ''
+  if (action === 'approve') {
+    if (!endVendorId) {
+      return res.status(400).json({ message: 'Select a destination rental service before approving' })
+    }
 
-  await booking.save()
+    const endVendor = await User.findById(endVendorId).select('name rentalService email phone role')
+    if (!endVendor) {
+      return res.status(404).json({ message: 'Destination vendor not found' })
+    }
+    if (endVendor.role !== 'center_admin') {
+      return res.status(400).json({ message: 'Selected user is not a vendor' })
+    }
 
-  // Notify endVendor
+    booking.endVendor              = endVendorId
+    booking.endHub.vendorId        = endVendorId
+    booking.endHub.rentalService   = endVendor.rentalService?.name || booking.endHub.city
+    booking.startVendorApproved    = true
+    booking.status                 = 'awaiting_destination_vendor'
+    booking.statusHistory.push({
+      status:    'awaiting_destination_vendor',
+      changedBy: req.user._id,
+      note:      note || `Approved by ${req.user.name}. Awaiting ${endVendor.rentalService?.name || 'destination vendor'} confirmation.`,
+    })
+    await booking.save()
+
+    // Notify endVendor
+    const io = req.app.get('io')
+    io?.to(`vendor_${endVendorId}`).emit('destination_vendor_request', {
+      bookingId:    booking._id,
+      from:         booking.startHub.city,
+      to:           booking.endHub.city,
+      vehicle:      `${(await Vehicle.findById(booking.vehicle).select('make model'))?.make} `,
+      startService: req.user.rentalService?.name || booking.startHub.rentalService,
+      message:      'A vehicle will be dropped at your hub. Please approve.',
+    })
+
+    // Notify customer
+    io?.to(`user_${booking.user}`).emit('booking_status_change', {
+      bookingId: booking._id,
+      status:    'awaiting_destination_vendor',
+      message:   `Pickup vendor approved! Waiting for ${endVendor.rentalService?.name || 'destination hub'} confirmation.`,
+    })
+
+    const populated = await populateBooking(Booking.findById(booking._id))
+    return res.status(200).json({ message: 'Approved — waiting for destination vendor', booking: populated })
+  }
+
+  return res.status(400).json({ message: 'action must be approve or decline' })
+})
+
+// ─── PATCH /api/bookings/:id/end-vendor-action ────────────────────────────────
+// endVendor approves or declines
+const endVendorAction = asyncHandler(async (req, res) => {
+  const { action, note } = req.body
+
+  const booking = await Booking.findById(req.params.id)
+  if (!booking) return res.status(404).json({ message: 'Booking not found' })
+  if (booking.endVendor?.toString() !== req.user._id.toString()) {
+    return res.status(403).json({ message: 'Only the destination vendor can perform this action' })
+  }
+  if (booking.status !== 'awaiting_destination_vendor') {
+    return res.status(400).json({ message: `Cannot act on a booking with status: ${booking.status}` })
+  }
+
   const io = req.app.get('io')
-  io?.to(`vendor_${endVendorId}`).emit('assigned_as_destination', {
-    bookingId: booking._id,
-    route:     `${booking.startHub.city} → ${booking.endHub.city}`,
-    message:   `You have been assigned as the destination hub for a booking`,
-  })
 
-  const populated = await Booking.findById(booking._id)
-    .populate('endVendor', 'name rentalService')
-  res.status(200).json({ message: 'Destination vendor assigned', booking: populated })
+  if (action === 'decline') {
+    // endVendor declines — booking goes back to startVendor to choose another
+    booking.endVendorDeclined = true
+    booking.endVendor         = null
+    booking.endHub.vendorId   = null
+    booking.endHub.rentalService = null
+    booking.status            = 'pending'   // back to pending so startVendor can reassign
+    booking.startVendorApproved = false
+    booking.statusHistory.push({
+      status:    'pending',
+      changedBy: req.user._id,
+      note:      note || `Declined by destination vendor ${req.user.name}. Pickup vendor must reassign.`,
+    })
+    await booking.save()
+
+    // Notify startVendor to pick another destination
+    io?.to(`vendor_${booking.startVendor}`).emit('destination_vendor_declined', {
+      bookingId: booking._id,
+      message:   `${req.user.name} declined. Please choose another rental service in ${booking.endHub.city}.`,
+    })
+    io?.to(`user_${booking.user}`).emit('booking_status_change', {
+      bookingId: booking._id,
+      status:    'pending',
+      message:   'Destination hub declined. Pickup vendor is finding an alternative.',
+    })
+
+    const populated = await populateBooking(Booking.findById(booking._id))
+    return res.status(200).json({ message: 'Declined — pickup vendor notified to reassign', booking: populated })
+  }
+
+  if (action === 'approve') {
+    booking.endVendorApproved = true
+    booking.status            = 'active'
+    booking.statusHistory.push({
+      status:    'active',
+      changedBy: req.user._id,
+      note:      note || `Approved by ${req.user.name}. Trip is now active.`,
+    })
+    await booking.save()
+
+    // Notify all parties
+    io?.to(`user_${booking.user}`).emit('booking_status_change', {
+      bookingId: booking._id,
+      status:    'active',
+      message:   'Both vendors confirmed! Your trip is ready. Pick up your vehicle.',
+    })
+    io?.to(`vendor_${booking.startVendor}`).emit('booking_status_change', {
+      bookingId: booking._id,
+      status:    'active',
+      message:   'Destination vendor confirmed. Trip is now active.',
+    })
+
+    const populated = await populateBooking(Booking.findById(booking._id))
+    return res.status(200).json({ message: 'Trip confirmed by both vendors — now active', booking: populated })
+  }
+
+  return res.status(400).json({ message: 'action must be approve or decline' })
 })
 
 // ─── PATCH /api/bookings/:id/status ──────────────────────────────────────────
+// For in-trip status changes: in_transit, dropped_at_destination, completed_by_destination
 const updateBookingStatus = asyncHandler(async (req, res) => {
   const { status, note } = req.body
-  const allowed = ['active', 'in_transit', 'completed', 'cancelled']
+  const allowed = ['in_transit', 'cancelled']
   if (!allowed.includes(status)) {
-    return res.status(400).json({ message: `Invalid status: ${status}` })
+    return res.status(400).json({ message: `Use dedicated endpoints for other status changes` })
   }
 
   const booking = await Booking.findById(req.params.id)
@@ -261,59 +327,22 @@ const updateBookingStatus = asyncHandler(async (req, res) => {
   const isVendor   = isStartV || isEndV || isOwner
 
   if (!isVendor && !isCustomer) return res.status(403).json({ message: 'Not authorised' })
-  if (isCustomer && !isVendor && status !== 'cancelled') {
-    return res.status(403).json({ message: 'Customers can only cancel bookings' })
+
+  if (status === 'in_transit') {
+    if (booking.status !== 'active') return res.status(400).json({ message: 'Trip must be active first' })
+    booking.status = 'in_transit'
+    booking.statusHistory.push({ status: 'in_transit', changedBy: req.user._id, note: note || 'Vehicle picked up — trip started' })
   }
 
-  booking.status = status
-  booking.statusHistory.push({
-    status,
-    changedBy: req.user._id,
-    note:      note || `Changed to ${status}`,
-  })
-
-  // ── COMPLETED ─────────────────────────────────────────────────────────────
-  if (status === 'completed') {
-    booking.completedAt     = new Date()
-    booking.depositReleased = true
-    booking.vendorPaid      = true
-
-    // 1. Vehicle relocates to endHub (THE USP)
-    await vehicle.relocateToHub(booking.endHub, booking._id)
-
-    // 2. Release deposit back to customer
-    const customer = await User.findById(booking.user)
-    await customer.releaseDeposit(booking.depositAmount)
-
-    // 3. Pay startVendor their cut (or vehicle owner)
-    const payVendorId = booking.startVendor || vehicle.owner
-    const vendor = await User.findById(payVendorId)
-    if (vendor) {
-      vendor.wallet.balance += booking.rentalCost - booking.platformFee
-      await vendor.save()
-    }
-
-    // 4. Vehicle lifetime stats
-    vehicle.totalRevenue += booking.rentalCost
-    await vehicle.save()
-
-    // 5. Notify endVendor that vehicle is arriving
-    const io = req.app.get('io')
-    if (booking.endVendor) {
-      io?.to(`vendor_${booking.endVendor}`).emit('vehicle_arriving', {
-        bookingId:  booking._id,
-        vehicle:    `${vehicle.make} ${vehicle.model} (${vehicle.plateNumber})`,
-        from:       booking.startHub.city,
-        message:    'Vehicle is on its way to your hub',
-      })
-    }
-  }
-
-  // ── CANCELLED ─────────────────────────────────────────────────────────────
   if (status === 'cancelled') {
+    if (!['pending', 'active'].includes(booking.status)) {
+      return res.status(400).json({ message: 'Can only cancel pending or active bookings' })
+    }
+    booking.status       = 'cancelled'
     booking.cancelledBy  = req.user._id
     booking.cancelledAt  = new Date()
     booking.cancelReason = note || `Cancelled by ${req.user.role}`
+    booking.statusHistory.push({ status: 'cancelled', changedBy: req.user._id, note: booking.cancelReason })
 
     vehicle.isAvailable = true
     await vehicle.save()
@@ -323,9 +352,7 @@ const updateBookingStatus = asyncHandler(async (req, res) => {
       customer.wallet.balance += booking.rentalCost
       if (customer.wallet.locked >= booking.depositAmount) {
         await customer.releaseDeposit(booking.depositAmount)
-      } else {
-        await customer.save()
-      }
+      } else { await customer.save() }
     }
   }
 
@@ -335,22 +362,247 @@ const updateBookingStatus = asyncHandler(async (req, res) => {
   io?.to(booking.chatRoomId).emit('booking_update', booking.toObject())
   io?.to(`user_${booking.user}`).emit('booking_status_change', {
     bookingId: booking._id,
-    status,
+    status:    booking.status,
     message: {
-      active:     'Your booking is confirmed! Vehicle is ready at the pickup hub.',
-      in_transit: `Vehicle is en route to ${booking.endHub?.city || booking.endHub?.name}`,
-      completed:  `Trip complete! ₹${booking.depositAmount} deposit returned to your wallet.`,
-      cancelled:  'Booking cancelled. Deposit returned to your wallet.',
-    }[status] || `Booking updated to ${status}`,
+      in_transit: 'Trip started! Enjoy your ride.',
+      cancelled:  'Booking cancelled. Refund processed.',
+    }[booking.status] || `Booking updated to ${booking.status}`,
   })
 
-  const populated = await Booking.findById(booking._id)
-    .populate('vehicle',     'make model year plateNumber currentHub')
-    .populate('user',        'name email phone')
-    .populate('startVendor', 'name rentalService')
-    .populate('endVendor',   'name rentalService')
+  const populated = await populateBooking(Booking.findById(booking._id))
+  res.status(200).json({ message: `Booking ${booking.status}`, booking: populated })
+})
 
-  res.status(200).json({ message: `Booking ${status}`, booking: populated })
+// ─── PATCH /api/bookings/:id/mark-dropped ────────────────────────────────────
+// Customer marks vehicle as dropped at destination hub
+const markDropped = asyncHandler(async (req, res) => {
+  const booking = await Booking.findById(req.params.id)
+  if (!booking) return res.status(404).json({ message: 'Booking not found' })
+  if (booking.user.toString() !== req.user._id.toString()) {
+    return res.status(403).json({ message: 'Only the customer can mark vehicle as dropped' })
+  }
+  if (booking.status !== 'in_transit') {
+    return res.status(400).json({ message: 'Trip must be in transit to mark as dropped' })
+  }
+
+  booking.status = 'dropped_at_destination'
+  booking.statusHistory.push({
+    status:    'dropped_at_destination',
+    changedBy: req.user._id,
+    note:      req.body.note || 'Customer dropped vehicle at destination hub',
+  })
+  await booking.save()
+
+  // Notify endVendor to go check vehicle
+  const io = req.app.get('io')
+  io?.to(`vendor_${booking.endVendor}`).emit('vehicle_dropped', {
+    bookingId: booking._id,
+    message:   'Customer has dropped the vehicle at your hub. Please verify and mark received.',
+  })
+  io?.to(`vendor_${booking.startVendor}`).emit('booking_status_change', {
+    bookingId: booking._id,
+    status:    'dropped_at_destination',
+    message:   'Customer has dropped the vehicle at destination hub.',
+  })
+
+  const populated = await populateBooking(Booking.findById(booking._id))
+  res.status(200).json({ message: 'Vehicle marked as dropped — destination vendor notified', booking: populated })
+})
+
+// ─── PATCH /api/bookings/:id/mark-received ───────────────────────────────────
+// endVendor confirms they received the vehicle — triggers relocation
+const markReceived = asyncHandler(async (req, res) => {
+  const booking = await Booking.findById(req.params.id)
+  if (!booking) return res.status(404).json({ message: 'Booking not found' })
+  if (booking.endVendor?.toString() !== req.user._id.toString()) {
+    return res.status(403).json({ message: 'Only the destination vendor can mark vehicle as received' })
+  }
+  if (booking.status !== 'dropped_at_destination') {
+    return res.status(400).json({ message: 'Vehicle must be dropped first' })
+  }
+
+  const vehicle = await Vehicle.findById(booking.vehicle)
+
+  // ── Vehicle relocates to endHub (THE USP) ────────────────────────────────
+  await vehicle.relocateToHub(booking.endHub, booking._id)
+
+  // ── Revenue goes ONLY to startVendor (rental minus platform fee) ────────
+  const startVendor = await User.findById(booking.startVendor)
+  if (startVendor) {
+    startVendor.wallet.balance += booking.rentalCost - booking.platformFee
+    booking.vendorPaid = true
+    await startVendor.save()
+  }
+
+  // ── Platform fee goes to platform account ─────────────────────────────────
+  // PLATFORM_ACCOUNT_EMAIL in .env — the admin account that collects fees
+  if (process.env.PLATFORM_ACCOUNT_EMAIL && booking.platformFee > 0) {
+    const platformAccount = await User.findOne({ email: process.env.PLATFORM_ACCOUNT_EMAIL })
+    if (platformAccount) {
+      platformAccount.wallet.balance += booking.platformFee
+      await platformAccount.save()
+    }
+  }
+
+  vehicle.totalRevenue += booking.rentalCost
+  await vehicle.save()
+
+  booking.status       = 'completed_by_destination'
+  booking.statusHistory.push({
+    status:    'completed_by_destination',
+    changedBy: req.user._id,
+    note:      req.body.note || `Vehicle received by ${req.user.name}. Awaiting deposit release from source vendor.`,
+  })
+  await booking.save()
+
+  // Notify startVendor to release deposit
+  const io = req.app.get('io')
+  io?.to(`vendor_${booking.startVendor}`).emit('ready_to_release_deposit', {
+    bookingId:     booking._id,
+    message:       'Destination vendor confirmed receipt. Please review and release security deposit.',
+    depositAmount: booking.depositAmount,
+  })
+  io?.to(`user_${booking.user}`).emit('booking_status_change', {
+    bookingId: booking._id,
+    status:    'completed_by_destination',
+    message:   'Vehicle received at destination! Source vendor will review and release your security deposit.',
+  })
+
+  const populated = await populateBooking(Booking.findById(booking._id))
+  res.status(200).json({ message: 'Vehicle received — source vendor notified to release deposit', booking: populated })
+})
+
+// ─── PATCH /api/bookings/:id/release-deposit ─────────────────────────────────
+// startVendor manually releases deposit (full or partial after damage deduction)
+const releaseDeposit = asyncHandler(async (req, res) => {
+  const { deductAmount = 0, note } = req.body
+  const deduct = Math.max(0, Number(deductAmount))
+
+  const booking = await Booking.findById(req.params.id)
+  if (!booking) return res.status(404).json({ message: 'Booking not found' })
+
+  if (booking.startVendor?.toString() !== req.user._id.toString()) {
+    return res.status(403).json({ message: 'Only the source vendor can release the deposit' })
+  }
+  if (booking.status !== 'completed_by_destination') {
+    return res.status(400).json({ message: 'Trip must be completed by destination vendor first' })
+  }
+  if (booking.depositReleased) {
+    return res.status(400).json({ message: 'Deposit already released' })
+  }
+  if (deduct > booking.depositAmount) {
+    return res.status(400).json({ message: `Cannot deduct more than deposit (₹${booking.depositAmount})` })
+  }
+
+  const refund = booking.depositAmount - deduct
+  const customer = await User.findById(booking.user)
+
+  // Return deposit minus any deduction
+  if (refund > 0) {
+    customer.wallet.balance += refund
+  }
+  // Release from locked
+  if (customer.wallet.locked >= booking.depositAmount) {
+    customer.wallet.locked = Math.max(0, customer.wallet.locked - booking.depositAmount)
+  }
+  await customer.save()
+
+  // If deduction, pay it to startVendor
+  if (deduct > 0) {
+    const startVendor = await User.findById(booking.startVendor)
+    if (startVendor) {
+      startVendor.wallet.balance += deduct
+      await startVendor.save()
+    }
+  }
+
+  booking.depositReleased      = true
+  booking.depositReleasedAt    = new Date()
+  booking.depositReleasedBy    = req.user._id
+  booking.depositDeductAmount  = deduct
+  booking.depositRefundAmount  = refund
+  booking.status               = 'completed'
+  booking.completedAt          = new Date()
+  booking.statusHistory.push({
+    status:    'completed',
+    changedBy: req.user._id,
+    note:      note || `Deposit released. Refunded ₹${refund}${deduct > 0 ? `, deducted ₹${deduct} for damage` : ''}.`,
+  })
+  await booking.save()
+
+  const io = req.app.get('io')
+  io?.to(`user_${booking.user}`).emit('deposit_released', {
+    bookingId:    booking._id,
+    refundAmount: refund,
+    deductAmount: deduct,
+    message:      deduct > 0
+      ? `₹${refund} returned to wallet. ₹${deduct} deducted for damage.`
+      : `₹${refund} security deposit returned to your wallet!`,
+  })
+
+  const populated = await populateBooking(Booking.findById(booking._id))
+  res.status(200).json({
+    message:      `Deposit processed. ₹${refund} refunded, ₹${deduct} deducted.`,
+    booking:      populated,
+    refundAmount: refund,
+    deductAmount: deduct,
+  })
+})
+
+// ─── GET /api/bookings/my ─────────────────────────────────────────────────────
+const getMyBookings = asyncHandler(async (req, res) => {
+  const bookings = await populateBooking(
+    Booking.find({ user: req.user._id }).sort({ createdAt: -1 })
+  )
+  res.status(200).json({ count: bookings.length, bookings })
+})
+
+// ─── GET /api/bookings/vendor ─────────────────────────────────────────────────
+const getVendorBookings = asyncHandler(async (req, res) => {
+  const vendorId   = req.user._id
+  const vehicleIds = await Vehicle.find({ owner: vendorId }).distinct('_id')
+
+  const bookings = await populateBooking(
+    Booking.find({
+      $or: [
+        { startVendor: vendorId },
+        { endVendor:   vendorId },
+        { vehicle:     { $in: vehicleIds } },
+      ],
+    }).sort({ createdAt: -1 })
+  )
+
+  // Deduplicate
+  const seen = new Set()
+  const unique = bookings.filter(b => {
+    if (seen.has(b._id.toString())) return false
+    seen.add(b._id.toString())
+    return true
+  })
+
+  const summary = {
+    pending:                    unique.filter(b => b.status === 'pending').length,
+    awaiting_destination_vendor:unique.filter(b => b.status === 'awaiting_destination_vendor').length,
+    active:                     unique.filter(b => b.status === 'active').length,
+    in_transit:                 unique.filter(b => b.status === 'in_transit').length,
+    dropped_at_destination:     unique.filter(b => b.status === 'dropped_at_destination').length,
+    completed_by_destination:   unique.filter(b => b.status === 'completed_by_destination').length,
+    completed:                  unique.filter(b => b.status === 'completed').length,
+    cancelled:                  unique.filter(b => b.status === 'cancelled').length,
+    totalRevenue: unique
+      .filter(b => b.status === 'completed' && b.startVendor?.toString() === vendorId.toString())
+      .reduce((s, b) => s + b.rentalCost, 0),
+  }
+
+  res.status(200).json({ count: unique.length, bookings: unique, summary })
+})
+
+// ─── GET /api/bookings/:id ────────────────────────────────────────────────────
+const getBookingById = asyncHandler(async (req, res) => {
+  const booking = await populateBooking(Booking.findById(req.params.id))
+  if (!booking) return res.status(404).json({ message: 'Booking not found' })
+  if (!isParty(booking, req.user._id)) return res.status(403).json({ message: 'Not authorised' })
+  res.status(200).json({ booking })
 })
 
 // ─── PATCH /api/bookings/:id/cancel ──────────────────────────────────────────
@@ -370,7 +622,6 @@ const getNetworkStats = asyncHandler(async (req, res) => {
     Booking.getTopRoutes(8),
     Vehicle.countDocuments({ isActive: true, isAvailable: true }),
   ])
-
   res.status(200).json({
     totalTrips:        totalCompleted,
     totalRevenue:      revenueResult[0]?.total || 0,
@@ -384,40 +635,26 @@ const getChatHistory = asyncHandler(async (req, res) => {
   const booking = await Booking.findById(req.params.id)
     .select('messages chatRoomId user vehicle startVendor endVendor')
     .populate('vehicle', 'owner')
-
   if (!booking) return res.status(404).json({ message: 'Booking not found' })
-
-  const uid      = req.user._id.toString()
-  const allowed  = [
-    booking.user.toString(),
-    booking.startVendor?.toString(),
-    booking.endVendor?.toString(),
-    booking.vehicle?.owner?.toString(),
-  ].filter(Boolean)
-
-  if (!allowed.includes(uid)) return res.status(403).json({ message: 'Not authorised' })
-
+  if (!isParty(booking, req.user._id)) return res.status(403).json({ message: 'Not authorised' })
   res.status(200).json({ chatRoomId: booking.chatRoomId, messages: booking.messages })
 })
 
-// ─── POST /api/bookings/:id/rate ─────────────────────────────────────────────
-// Customer rates vendor (1-5 stars) + Vendor rates customer
-// Both can submit once per booking after completion
+// ─── PATCH /api/bookings/:id/assign-end-vendor (kept for backward compat) ────
+const assignEndVendor = asyncHandler(async (req, res) => {
+  req.body.action = 'approve'
+  return startVendorAction(req, res)
+})
+
+// ─── POST /api/bookings/:id/rate ──────────────────────────────────────────────
 const submitRating = asyncHandler(async (req, res) => {
   const { rating, reviewNote } = req.body
   const stars = Number(rating)
+  if (!stars || stars < 1 || stars > 5) return res.status(400).json({ message: 'Rating must be 1–5' })
 
-  if (!stars || stars < 1 || stars > 5) {
-    return res.status(400).json({ message: 'Rating must be between 1 and 5' })
-  }
-
-  const booking = await Booking.findById(req.params.id)
-    .populate('vehicle', 'owner')
+  const booking = await Booking.findById(req.params.id).populate('vehicle', 'owner')
   if (!booking) return res.status(404).json({ message: 'Booking not found' })
-
-  if (booking.status !== 'completed') {
-    return res.status(400).json({ message: 'Can only rate completed bookings' })
-  }
+  if (booking.status !== 'completed') return res.status(400).json({ message: 'Can only rate completed bookings' })
 
   const uid        = req.user._id.toString()
   const isCustomer = booking.user.toString() === uid
@@ -427,39 +664,25 @@ const submitRating = asyncHandler(async (req, res) => {
     booking.vehicle?.owner?.toString(),
   ].filter(Boolean).includes(uid)
 
-  if (!isCustomer && !isVendor) {
-    return res.status(403).json({ message: 'Not authorised' })
-  }
+  if (!isCustomer && !isVendor) return res.status(403).json({ message: 'Not authorised' })
 
-  // Customer rates the vendor experience
   if (isCustomer) {
-    if (booking.customerRating) {
-      return res.status(400).json({ message: 'You have already rated this booking' })
-    }
+    if (booking.customerRating) return res.status(400).json({ message: 'Already rated' })
     booking.customerRating = stars
     booking.reviewNote     = reviewNote?.trim() || null
-  }
-
-  // Vendor rates the customer
-  if (isVendor && !isCustomer) {
-    if (booking.vendorRating) {
-      return res.status(400).json({ message: 'You have already rated this customer' })
-    }
+  } else {
+    if (booking.vendorRating) return res.status(400).json({ message: 'Already rated' })
     booking.vendorRating = stars
   }
-
   await booking.save()
-
-  res.status(200).json({
-    message: 'Rating submitted — thank you!',
-    customerRating: booking.customerRating,
-    vendorRating:   booking.vendorRating,
-    reviewNote:     booking.reviewNote,
-  })
+  res.status(200).json({ message: 'Rating submitted!', customerRating: booking.customerRating, vendorRating: booking.vendorRating })
 })
 
 module.exports = {
   createBooking, getMyBookings, getVendorBookings,
   getBookingById, updateBookingStatus, cancelBooking,
-  getNetworkStats, getChatHistory, assignEndVendor, submitRating,
+  getNetworkStats, getChatHistory, assignEndVendor,
+  startVendorAction, endVendorAction,
+  markDropped, markReceived, releaseDeposit,
+  submitRating,
 }

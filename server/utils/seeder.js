@@ -1,261 +1,246 @@
 require('dotenv').config()
-const mongoose  = require('mongoose')
-const connectDB = require('../config/db')
-const User      = require('../models/User.model')
-const Vehicle   = require('../models/Vehicle.model')
-const Booking   = require('../models/Booking.model')
+const mongoose = require('mongoose')
+const User     = require('../models/User.model')
+const Vehicle  = require('../models/Vehicle.model')
+const Booking  = require('../models/Booking.model')
 
-// ── Hub data inline (no external dependency) ──────────────────────────────────
-const HUBS = [
-  { name: 'Mumbai Central Hub',   city: 'Mumbai',    lat: 18.9696, lng: 72.8196 },
-  { name: 'Pune Station Hub',     city: 'Pune',      lat: 18.5204, lng: 73.8567 },
-  { name: 'Lonavala Hill Hub',    city: 'Lonavala',  lat: 18.7546, lng: 73.4062 },
-  { name: 'Bangalore MG Road Hub',city: 'Bangalore', lat: 12.9716, lng: 77.5946 },
-  { name: 'Hyderabad HITEC Hub',  city: 'Hyderabad', lat: 17.4435, lng: 78.3772 },
-  { name: 'Goa Panaji Hub',       city: 'Goa',       lat: 15.4909, lng: 73.8278 },
-  { name: 'Delhi CP Hub',         city: 'New Delhi', lat: 28.6315, lng: 77.2167 },
-  { name: 'Chennai Anna Hub',     city: 'Chennai',   lat: 13.0827, lng: 80.2707 },
+const connectDB = require('../config/db')
+
+// ── 10 cities × 3 rental services each = 30 vendors ──────────────────────────
+const CITIES = [
+  { city: 'Mumbai',    lat: 18.9696, lng: 72.8196, address: 'Mumbai Central Station' },
+  { city: 'Pune',      lat: 18.5204, lng: 73.8567, address: 'Pune Railway Station'   },
+  { city: 'Delhi',     lat: 28.6315, lng: 77.2167, address: 'Connaught Place'        },
+  { city: 'Bangalore', lat: 12.9716, lng: 77.5946, address: 'MG Road'               },
+  { city: 'Hyderabad', lat: 17.4435, lng: 78.3772, address: 'HITEC City'             },
+  { city: 'Chennai',   lat: 13.0827, lng: 80.2707, address: 'Anna Salai'             },
+  { city: 'Jaipur',    lat: 26.9124, lng: 75.7873, address: 'Pink City Center'       },
+  { city: 'Goa',       lat: 15.4909, lng: 73.8278, address: 'Panaji Bus Stand'       },
+  { city: 'Varanasi',  lat: 25.3176, lng: 82.9739, address: 'Ghats Road'             },
+  { city: 'Agra',      lat: 27.1767, lng: 78.0081, address: 'Taj Mahal Road'         },
+]
+
+const SERVICE_SUFFIXES = ['Rides', 'Wheels', 'Motors']
+
+// Vehicle data per city (2 vehicles per vendor = 60 total)
+const VEHICLE_TEMPLATES = [
+  { make: 'Honda',   model: 'City',      year: 2022, category: 'sedan',    pricePerDay: 1800, securityDeposit: 2000, image: 'https://images.unsplash.com/photo-1609521263047-f8f205293f24?w=600' },
+  { make: 'Maruti',  model: 'Swift',     year: 2023, category: 'hatchback', pricePerDay: 1200, securityDeposit: 1500, image: 'https://images.unsplash.com/photo-1550355291-bbee04a92027?w=600' },
+  { make: 'Hyundai', model: 'Creta',     year: 2023, category: 'suv',      pricePerDay: 2500, securityDeposit: 3000, image: 'https://images.unsplash.com/photo-1614200187524-dc4b892acf16?w=600' },
+  { make: 'Tata',    model: 'Nexon',     year: 2022, category: 'suv',      pricePerDay: 2200, securityDeposit: 2500, image: 'https://images.unsplash.com/photo-1601362840469-51e4d8d58785?w=600' },
+  { make: 'Royal Enfield', model: 'Bullet 350', year: 2023, category: 'bike', pricePerDay: 800, securityDeposit: 1000, image: 'https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=600' },
+  { make: 'Maruti',  model: 'Ertiga',    year: 2022, category: 'van',      pricePerDay: 2800, securityDeposit: 3500, image: 'https://images.unsplash.com/photo-1559416523-140ddc3d238c?w=600' },
 ]
 
 const seed = async () => {
-  await connectDB()
+  try {
+    await connectDB()
 
-  console.log('🗑  Clearing existing data...')
-  await User.deleteMany({})
-  await Vehicle.deleteMany({})
-  await Booking.deleteMany({})
+    console.log('🗑  Clearing existing data...')
+    await User.deleteMany({})
+    await Vehicle.deleteMany({})
+    await Booking.deleteMany({})
 
-  // ── Users ──────────────────────────────────────────────────────────────────
-  console.log('👤  Creating users...')
-  const users = await User.create([
-    {
-      name:     'Arjun Sharma',
+    // ── Demo customer ─────────────────────────────────────────────────────────
+    console.log('👤  Creating demo customer...')
+    const customer = await User.create({
+      name:     'Rahul Sharma',
       email:    'customer@demo.com',
       phone:    '9876543210',
       password: 'demo123',
       role:     'customer',
       kyc: {
         status:        'verified',
-        extractedName: 'Arjun Sharma',
-        dlUrl:         'https://res.cloudinary.com/demo/image/upload/sample.jpg',
-        aadhaarUrl:    'https://res.cloudinary.com/demo/image/upload/sample.jpg',
+        dlNumber:      'DL0420110034567',
+        aadhaarNumber: '1234 5678 9012',
+        extractedName: 'Rahul Sharma',
         verifiedAt:    new Date(),
       },
       wallet: { balance: 0, locked: 0 },
-    },
-    {
-      name:     'Priya Nair',
-      email:    'priya@demo.com',
-      phone:    '9123456789',
-      password: 'demo123',
-      role:     'customer',
-      kyc:      { status: 'pending' },
-      wallet:   { balance: 0, locked: 0 },
-    },
-    {
-      name:     'Ravi Motors',
-      email:    'vendor@demo.com',
-      phone:    '9988776655',
-      password: 'demo123',
-      role:     'center_admin',
-      homeHub:  { name: HUBS[0].name, lat: HUBS[0].lat, lng: HUBS[0].lng },
-      rentalService: {
-        name:    'Mumbai Central Rentals',
-        city:    'Mumbai',
-        address: 'Mumbai Central Station, Mumbai',
-        lat:     18.9696,
-        lng:     72.8196,
-        hubCode: 'HUB-MUM-001',
-      },
-      wallet:   { balance: 0, locked: 0 },
-    },
-    {
-      name:     'Deccan Rentals',
-      email:    'deccan@demo.com',
-      phone:    '9871234560',
-      password: 'demo123',
-      role:     'center_admin',
-      homeHub:  { name: HUBS[1].name, lat: HUBS[1].lat, lng: HUBS[1].lng },
-      rentalService: {
-        name:    'Deccan Rentals Pune',
-        city:    'Pune',
-        address: 'Pune Railway Station, Pune',
-        lat:     18.5204,
-        lng:     73.8567,
-        hubCode: 'HUB-PUN-001',
-      },
-      wallet:   { balance: 0, locked: 0 },
-    },
-  ])
+    })
 
-  const customer = users.find(u => u.email === 'customer@demo.com')
-  const vendor1  = users.find(u => u.email === 'vendor@demo.com')
-  const vendor2  = users.find(u => u.email === 'deccan@demo.com')
+    // ── 30 vendors (3 per city × 10 cities) ──────────────────────────────────
+    console.log('🏪  Creating 30 rental service vendors across 10 cities...')
+    const vendorDocs = []
 
-  // ── Vehicles ───────────────────────────────────────────────────────────────
-  console.log('🚗  Creating vehicles across hubs...')
-  const vehicles = await Vehicle.create([
-    {
-      make: 'Honda',   model: 'City',      year: 2022,
-      plateNumber: 'MH01AB1234', pricePerDay: 1800, category: 'sedan',
-      currentHub:  HUBS[0], owner: vendor1._id, isAvailable: true,
-      images:      ['https://images.unsplash.com/photo-1590362891991-f776e747a588?w=600'],
-      description: 'Well-maintained Honda City with AC and music system',
-      hubHistory:  [{ hub: HUBS[0], arrivedAt: new Date() }],
-    },
-    {
-      make: 'Tata',    model: 'Nexon',     year: 2023,
-      plateNumber: 'MH01CD5678', pricePerDay: 2200, category: 'suv',
-      currentHub:  HUBS[0], owner: vendor1._id, isAvailable: true,
-      images:      ['https://images.unsplash.com/photo-1614200187524-dc4b892acf16?w=600'],
-      description: 'Tata Nexon EV — zero emissions, perfect for city hops',
-      hubHistory:  [{ hub: HUBS[0], arrivedAt: new Date() }],
-    },
-    {
-      make: 'Maruti',  model: 'Swift',     year: 2021,
-      plateNumber: 'MH02EF9012', pricePerDay: 1200, category: 'hatchback',
-      currentHub:  HUBS[0], owner: vendor1._id, isAvailable: true,
-      images:      ['https://images.unsplash.com/photo-1541899481282-d53bffe3c35d?w=600'],
-      description: 'Zippy Swift — ideal for Mumbai traffic',
-      hubHistory:  [{ hub: HUBS[0], arrivedAt: new Date() }],
-    },
-    {
-      make: 'Royal Enfield', model: 'Classic 350', year: 2022,
-      plateNumber: 'MH03GH3456', pricePerDay: 900, category: 'bike',
-      currentHub:  HUBS[2], owner: vendor1._id, isAvailable: true,
-      images:      ['https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=600'],
-      description: 'Classic 350 — ride the ghats in style from Lonavala',
-      hubHistory:  [{ hub: HUBS[2], arrivedAt: new Date() }],
-    },
-    {
-      make: 'Hyundai', model: 'Creta',     year: 2023,
-      plateNumber: 'MH12IJ7890', pricePerDay: 2500, category: 'suv',
-      currentHub:  HUBS[1], owner: vendor2._id, isAvailable: true,
-      images:      ['https://images.unsplash.com/photo-1617469165786-8007eda3caa7?w=600'],
-      description: 'Hyundai Creta — premium SUV experience',
-      hubHistory:  [{ hub: HUBS[1], arrivedAt: new Date() }],
-    },
-    {
-      make: 'Toyota',  model: 'Innova',    year: 2021,
-      plateNumber: 'MH12KL1234', pricePerDay: 3000, category: 'van',
-      currentHub:  HUBS[1], owner: vendor2._id, isAvailable: true,
-      images:      ['https://images.unsplash.com/photo-1609521263047-f8f205293f24?w=600'],
-      description: '7-seater Innova — perfect for group trips Pune to Goa',
-      hubHistory:  [{ hub: HUBS[1], arrivedAt: new Date() }],
-    },
-    {
-      make: 'Honda',   model: 'Activa',    year: 2023,
-      plateNumber: 'MH12MN5678', pricePerDay: 500, category: 'bike',
-      currentHub:  HUBS[5], owner: vendor2._id, isAvailable: true,
-      images:      ['https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=600'],
-      description: 'Honda Activa — explore Goa beaches freely',
-      hubHistory:  [{ hub: HUBS[5], arrivedAt: new Date() }],
-    },
-    {
-      make: 'Ford',    model: 'EcoSport',  year: 2022,
-      plateNumber: 'KA01OP9012', pricePerDay: 2000, category: 'suv',
-      currentHub:  HUBS[3], owner: vendor2._id, isAvailable: true,
-      images:      ['https://images.unsplash.com/photo-1614200187524-dc4b892acf16?w=600'],
-      description: 'Compact SUV perfect for Bangalore tech corridors',
-      hubHistory:  [{ hub: HUBS[3], arrivedAt: new Date() }],
-    },
-  ])
+    for (const cityData of CITIES) {
+      for (let i = 0; i < 3; i++) {
+        const suffix      = SERVICE_SUFFIXES[i]
+        const serviceName = `${cityData.city} ${suffix}`
+        const emailSlug   = `${cityData.city.toLowerCase()}.${suffix.toLowerCase()}`
 
-  // ── Sample Bookings ────────────────────────────────────────────────────────
-  console.log('📋  Creating sample bookings...')
+        vendorDocs.push({
+          name:     `${serviceName} Owner`,
+          email:    `${emailSlug}@demo.com`,
+          phone:    `98${String(CITIES.indexOf(cityData)).padStart(2,'0')}${String(i).padStart(2,'0')}12345`.slice(0,10),
+          password: 'demo123',
+          role:     'center_admin',
+          rentalService: {
+            name:    serviceName,
+            city:    cityData.city,
+            address: cityData.address,
+            lat:     cityData.lat + (i * 0.005),   // slight offset per service
+            lng:     cityData.lng + (i * 0.005),
+            hubCode: `HUB-${cityData.city.slice(0,3).toUpperCase()}-00${i+1}`,
+          },
+          wallet: { balance: 0, locked: 0 },
+        })
+      }
+    }
 
-  // Completed: Mumbai → Pune (USP showcase — different city drop-off)
-  await Booking.create({
-    user:          customer._id,
-    vehicle:       vehicles[0]._id,
-    startVendor:   vendor1._id,
-    endVendor:     vendor2._id,
-    startHub:      { ...HUBS[0], vendorId: vendor1._id, rentalService: 'Mumbai Central Rentals' },
-    endHub:        { ...HUBS[1], vendorId: vendor2._id, rentalService: 'Deccan Rentals Pune' },
-    startDateTime: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000),
-    endDateTime:   new Date(Date.now() -  8 * 24 * 60 * 60 * 1000),
-    startDate:     new Date(Date.now() - 10 * 24 * 60 * 60 * 1000),
-    endDate:       new Date(Date.now() -  8 * 24 * 60 * 60 * 1000),
-    totalDays:     2,
-    totalHours:    48,
-    pricePerDay:   1800,
-    rentalCost:    3600,
-    depositAmount: 2000,
-    platformFee:   360,
-    totalPrice:    3600,
-    paymentMethod: 'wallet',
-    paymentStatus: 'paid',
-    status:        'completed',
-    depositReleased: true,
-    vendorPaid:      true,
-    completedAt:   new Date(Date.now() - 8 * 24 * 60 * 60 * 1000),
-    customerRating: 5,
-    vendorRating:   5,
-    reviewNote:     'Great ride from Mumbai to Pune!',
-    statusHistory: [
-      { status: 'pending',    changedBy: customer._id, note: 'Booking created' },
-      { status: 'active',     changedBy: vendor1._id,  note: 'Vendor confirmed' },
-      { status: 'in_transit', changedBy: vendor1._id,  note: 'Trip started — Mumbai to Pune' },
-      { status: 'completed',  changedBy: vendor2._id,  note: 'Vehicle dropped at Pune Hub ✅' },
-    ],
-  })
+    const vendors = await User.create(vendorDocs)
+    console.log(`✅  Created ${vendors.length} vendors`)
 
-  // Active: Pune → Goa (cross-state USP route)
-  await Booking.create({
-    user:          customer._id,
-    vehicle:       vehicles[4]._id,
-    startVendor:   vendor2._id,
-    startHub:      { ...HUBS[1], vendorId: vendor2._id, rentalService: 'Deccan Rentals Pune' },
-    endHub:        { ...HUBS[5], vendorId: null, rentalService: 'Goa Panaji Hub' },
-    startDateTime: new Date(),
-    endDateTime:   new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
-    startDate:     new Date(),
-    endDate:       new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
-    totalDays:     3,
-    totalHours:    72,
-    pricePerDay:   2500,
-    rentalCost:    7500,
-    depositAmount: 2000,
-    platformFee:   750,
-    totalPrice:    7500,
-    paymentMethod: 'wallet',
-    paymentStatus: 'paid',
-    status:        'active',
-    statusHistory: [
-      { status: 'pending', changedBy: customer._id, note: 'Booking created' },
-      { status: 'active',  changedBy: vendor2._id,  note: 'Vendor confirmed — Pune to Goa road trip!' },
-    ],
-  })
+    // ── Vehicles (2 per vendor) ───────────────────────────────────────────────
+    console.log('🚗  Creating vehicles...')
+    const vehicleDocs = []
+    let plateCounter  = 1000
 
-  console.log(`
-  ✅  Database seeded!
+    for (const vendor of vendors) {
+      const city    = vendor.rentalService.city
+      const cityIdx = CITIES.findIndex(c => c.city === city)
+      // Give each vendor 2 different vehicle types
+      const t1 = VEHICLE_TEMPLATES[(cityIdx * 2) % VEHICLE_TEMPLATES.length]
+      const t2 = VEHICLE_TEMPLATES[(cityIdx * 2 + 1) % VEHICLE_TEMPLATES.length]
 
-  ┌──────────────────────────────────────────────────────┐
-  │  Demo Accounts                                       │
-  │                                                      │
-  │  Customer (KYC verified)                             │
-  │    Email    : customer@demo.com                      │
-  │    Password : demo123                                │
-  │                                                      │
-  │  Vendor 1 — Mumbai/Lonavala fleet                    │
-  │    Email    : vendor@demo.com                        │
-  │    Password : demo123                                │
-  │                                                      │
-  │  Vendor 2 — Pune/Goa/Bangalore fleet                 │
-  │    Email    : deccan@demo.com                        │
-  │    Password : demo123                                │
-  │                                                      │
-  │  Vehicles : ${vehicles.length} across ${new Set(vehicles.map(v => v.currentHub.city)).size} hub cities                   │
-  │  Bookings : 2 sample (1 completed, 1 active)         │
-  │  USP Route: Mumbai→Pune, Pune→Goa                    │
-  └──────────────────────────────────────────────────────┘
-  `)
+      const hubData = {
+        name:          vendor.rentalService.name,
+        city:          vendor.rentalService.city,
+        address:       vendor.rentalService.address,
+        lat:           vendor.rentalService.lat,
+        lng:           vendor.rentalService.lng,
+        vendorId:      vendor._id,
+        rentalService: vendor.rentalService.name,
+      }
 
-  await mongoose.connection.close()
-  process.exit(0)
+      for (const template of [t1, t2]) {
+        plateCounter++
+        vehicleDocs.push({
+          ...template,
+          plateNumber:  `XX${String(plateCounter).padStart(6,'0')}`,
+          description:  `${template.make} ${template.model} available in ${city}`,
+          images:       [template.image],
+          owner:        vendor._id,
+          homeService: {
+            vendorId: vendor._id,
+            name:     vendor.rentalService.name,
+            city:     vendor.rentalService.city,
+            address:  vendor.rentalService.address,
+            lat:      vendor.rentalService.lat,
+            lng:      vendor.rentalService.lng,
+          },
+          currentHub:  hubData,
+          hubHistory:  [{ hub: hubData, arrivedAt: new Date() }],
+          isAvailable: true,
+          isActive:    true,
+        })
+      }
+    }
+
+    const vehicles = await Vehicle.create(vehicleDocs)
+    console.log(`✅  Created ${vehicles.length} vehicles`)
+
+    // ── 2 sample bookings ─────────────────────────────────────────────────────
+    console.log('📋  Creating sample bookings...')
+
+    const mumbaiVendor1 = vendors.find(v => v.rentalService.city === 'Mumbai' && v.rentalService.name.includes('Rides'))
+    const puneVendor1   = vendors.find(v => v.rentalService.city === 'Pune'   && v.rentalService.name.includes('Rides'))
+    const mumbaiVehicle = vehicles.find(v => v.owner.toString() === mumbaiVendor1._id.toString())
+
+    if (mumbaiVendor1 && puneVendor1 && mumbaiVehicle) {
+      const startDT = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000)
+      const endDT   = new Date(Date.now() -  8 * 24 * 60 * 60 * 1000)
+
+      await Booking.create({
+        user:          customer._id,
+        vehicle:       mumbaiVehicle._id,
+        startVendor:   mumbaiVendor1._id,
+        endVendor:     puneVendor1._id,
+        startVendorApproved: true,
+        endVendorApproved:   true,
+        startHub: {
+          name:          mumbaiVendor1.rentalService.name,
+          city:          'Mumbai',
+          address:       mumbaiVendor1.rentalService.address,
+          lat:           mumbaiVendor1.rentalService.lat,
+          lng:           mumbaiVendor1.rentalService.lng,
+          vendorId:      mumbaiVendor1._id,
+          rentalService: mumbaiVendor1.rentalService.name,
+        },
+        endHub: {
+          name:          puneVendor1.rentalService.name,
+          city:          'Pune',
+          address:       puneVendor1.rentalService.address,
+          lat:           puneVendor1.rentalService.lat,
+          lng:           puneVendor1.rentalService.lng,
+          vendorId:      puneVendor1._id,
+          rentalService: puneVendor1.rentalService.name,
+        },
+        startDateTime:    startDT,
+        endDateTime:      endDT,
+        startDate:        startDT,
+        endDate:          endDT,
+        totalDays:        2,
+        totalHours:       48,
+        pricePerDay:      mumbaiVehicle.pricePerDay,
+        rentalCost:       mumbaiVehicle.pricePerDay * 2,
+        depositAmount:    mumbaiVehicle.securityDeposit,
+        platformFee:      Math.round(mumbaiVehicle.pricePerDay * 2 * 0.1),
+        totalPrice:       mumbaiVehicle.pricePerDay * 2 + mumbaiVehicle.securityDeposit,
+        paymentMethod:    'wallet',
+        paymentStatus:    'paid',
+        status:           'completed',
+        depositReleased:  true,
+        depositReleasedAt:endDT,
+        depositReleasedBy:mumbaiVendor1._id,
+        depositRefundAmount: mumbaiVehicle.securityDeposit,
+        depositDeductAmount: 0,
+        vendorPaid:       true,
+        completedAt:      endDT,
+        customerRating:   5,
+        vendorRating:     5,
+        reviewNote:       'Great experience! Mumbai to Pune was smooth.',
+        statusHistory: [
+          { status: 'pending',                     changedBy: customer._id,     note: 'Booking created' },
+          { status: 'awaiting_destination_vendor', changedBy: mumbaiVendor1._id,note: 'Approved by Mumbai Rides' },
+          { status: 'active',                      changedBy: puneVendor1._id,  note: 'Approved by Pune Rides' },
+          { status: 'in_transit',                  changedBy: customer._id,     note: 'Trip started' },
+          { status: 'dropped_at_destination',      changedBy: customer._id,     note: 'Vehicle dropped at Pune' },
+          { status: 'completed_by_destination',    changedBy: puneVendor1._id,  note: 'Vehicle received at Pune' },
+          { status: 'completed',                   changedBy: mumbaiVendor1._id,note: 'Full deposit released' },
+        ],
+      })
+      console.log('✅  Sample booking created (Mumbai → Pune, completed)')
+    }
+
+    // ── Print summary ─────────────────────────────────────────────────────────
+    console.log(`
+  ╔═══════════════════════════════════════════════════════════════╗
+  ║   HubDrive Database Seeded Successfully!                      ║
+  ╠═══════════════════════════════════════════════════════════════╣
+  ║   Customer:  customer@demo.com  /  demo123                    ║
+  ╠═══════════════════════════════════════════════════════════════╣
+  ║   Vendors:   30 rental services across 10 cities              ║
+  ║              3 per city: Rides, Wheels, Motors                ║
+  ║                                                               ║
+  ║   Cities:    Mumbai, Pune, Delhi, Bangalore, Hyderabad,       ║
+  ║              Chennai, Jaipur, Goa, Varanasi, Agra             ║
+  ╠═══════════════════════════════════════════════════════════════╣
+  ║   Vehicles:  ${vehicles.length} total (2 per vendor)                          ║
+  ╠═══════════════════════════════════════════════════════════════╣
+  ║   Vendor login pattern:                                       ║
+  ║   mumbai.rides@demo.com  /  demo123                           ║
+  ║   mumbai.wheels@demo.com /  demo123                           ║
+  ║   mumbai.motors@demo.com /  demo123                           ║
+  ║   pune.rides@demo.com    /  demo123  (etc.)                   ║
+  ╚═══════════════════════════════════════════════════════════════╝
+    `)
+
+    process.exit(0)
+  } catch (err) {
+    console.error('❌  Seeder failed:', err.message)
+    process.exit(1)
+  }
 }
 
-seed().catch(err => {
-  console.error('❌  Seeder failed:', err.message)
-  process.exit(1)
-})
+seed()

@@ -44,19 +44,25 @@ export const initials = (name) =>
 
 // ── Status helpers ────────────────────────────────────────────────────────────
 export const statusLabel = (status) => ({
-  pending:    'Pending',
-  active:     'Active',
-  in_transit: 'In Transit',
-  completed:  'Completed',
-  cancelled:  'Cancelled',
+  pending:                     'Awaiting Vendor',
+  awaiting_destination_vendor: 'Awaiting Dest. Hub',
+  active:                      'Confirmed',
+  in_transit:                  'In Transit',
+  dropped_at_destination:      'Vehicle Dropped',
+  completed_by_destination:    'Pending Deposit',
+  completed:                   'Completed',
+  cancelled:                   'Cancelled',
 }[status] || capitalize(status))
 
 export const statusClass = (status) => ({
-  pending:    'badge-pending',
-  active:     'badge-active',
-  in_transit: 'badge-transit',
-  completed:  'badge-completed',
-  cancelled:  'badge-cancelled',
+  pending:                     'badge-pending',
+  awaiting_destination_vendor: 'badge-pending',
+  active:                      'badge-active',
+  in_transit:                  'badge-transit',
+  dropped_at_destination:      'badge-transit',
+  completed_by_destination:    'badge-transit',
+  completed:                   'badge-completed',
+  cancelled:                   'badge-cancelled',
   verified:   'badge-verified',
 }[status] || 'badge-pending')
 
