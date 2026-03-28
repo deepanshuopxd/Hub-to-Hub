@@ -27,4 +27,4 @@ server/node_modules
 client/dist
 
 
-server/config/firebase-service-account.json
+server/config/firebase_service_account.json
